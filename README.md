@@ -4,7 +4,7 @@ A local analytics and demonstration application for synthetic banking transactio
 
 ## Current implementation
 
-The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. Read-only JSON endpoints expose transaction analytics and paginated transaction records. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Seed records are synthetic, dated in January 2025, denominated in USD, and contain no personal information.
+The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. Read-only JSON endpoints expose transaction analytics and paginated transaction records. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Default seed data is synthetic, denominated in USD, and covers January 1, 2025 through January 1, 2027, with a continuous daily baseline and additional variation in daily volume. It contains no customer or personal information.
 
 ### Requirements
 
@@ -31,6 +31,22 @@ python app.py
 Open `http://127.0.0.1:5000/health`. A successful response is `{"status":"ok"}`.
 Open `http://127.0.0.1:5000/` for the dashboard. Configure `DATABASE_URL` before starting the app to load analytics and transaction records; the dashboard shell and `/health` remain available without database configuration.
 
+## Deploy on Render
+
+Create a Render **Web Service** for this repository. Use these commands:
+
+| Render setting | Value |
+| --- | --- |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `gunicorn --bind 0.0.0.0:$PORT wsgi:app` |
+| Health Check Path (optional) | `/health` |
+
+The `wsgi:app` target imports the Flask application object from `wsgi.py`. Gunicorn binds to all interfaces on Render's assigned `PORT`; do not use the local `python app.py` development command for the hosted service. Render's Flask guidance uses `pip install -r requirements.txt` for dependency installation and Gunicorn as the production server ([Render Flask deployment guide](https://render.com/docs/deploy-flask), [Render port binding](https://render.com/docs/web-services#port-binding)).
+
+In the Render service's Environment settings, configure `APP_ENV=production` and `APP_DEBUG=0`. Set `DATABASE_URL` to the connection URL for an existing MySQL database, using the `mysql+pymysql://` SQLAlchemy scheme. Store the real URL and credentials only in Render's environment settings; do not commit them. The database must already have the application's schema and records. Startup does not run migrations, create tables, seed data, or reset records. The health endpoint reports process availability without checking database connectivity.
+
+Chart.js is loaded from jsDelivr, so the browser needs access to that CDN for charts. This repository change prepares the application configuration and start command; it does not create a Render service or deploy the app.
+
 Settings are read from the process environment. `.env.example` documents the supported names; it is a template and is not loaded automatically. No dotenv package is used. Set values in PowerShell, for example:
 
 ```powershell
@@ -39,7 +55,7 @@ $env:APP_DEBUG = "0"
 $env:DATABASE_URL = "mysql+pymysql://bank_demo:replace_me@127.0.0.1:3306/bank_analysis"
 ```
 
-Create the empty MySQL database first, then run `python -m app.seed` once to create the tables and insert sample data. Replace the example connection values with your local MySQL username and password; set real credentials in your shell environment and never commit them. `.env` files are ignored by Git, but this project does not load them automatically. The seed command refuses to mix sample data into a database that already contains accounts or transactions. `create_all` creates missing tables but does not migrate existing schemas.
+For development, create the MySQL database first and run `python -m app.seed` to create missing tables and add the deterministic synthetic sample. The default seed contains 1,200 events and covers January 1, 2025 through January 1, 2027. The original 100 January 2025 events retain their generated values and timestamps; the next 700 add one event per day from February 1, 2025 through January 1, 2027, and a further 400 add repeat events across that period to vary daily volume. Rerunning the command skips references already present and adds only missing synthetic accounts or transactions. It does not update or delete existing records. Review the target database before running a development seed so synthetic records are not mixed into a production dataset. Replace the example connection values with your local MySQL username and password; set real credentials in your shell environment and never commit them. `.env` files are ignored by Git, but this project does not load them automatically. `create_all` creates missing tables but does not migrate existing schemas.
 
 The schema stores each transaction as one event. `amount` is a positive `DECIMAL(12, 2)` value and is not a net balance or profit. Deposits have a destination account, withdrawals have a source account, and transfers/payments have both. A transfer is not duplicated into two transaction rows. Timestamp values are stored in UTC. The sample data uses USD only; future analytics must group by currency before summing.
 
@@ -87,13 +103,14 @@ The application has three main Flask pages with shared top navigation: `/` (Over
 - **Transactions** is dedicated to the paginated read-only table with status, type, and date filters. Visible dates include both the start and through date. Requests translate the through date to the following UTC midnight, matching the API's exclusive end boundary. The API does not support reference search, so the page does not show a search control.
 - **Analysis** provides a date selector, daily volume, status/type counts, and successful transaction, deposit, and withdrawal amounts from the selected period. The date-filtered figures all refresh together from the existing analytics service via `/api/analytics/volume`.
 
-Successful totals include successful events only; transaction amounts are not balances or profit, and analytics do not establish fraud. Transfers remain one event. Analytics is USD-only. The demonstration dataset is synthetic and is not connected to real bank accounts. Date filters initially cover January 2025, matching the supplied seed data; reset restores that range.
+Successful totals include successful events only; transaction amounts are not balances or profit, and analytics do not establish fraud. Transfers remain one event. Analytics is USD-only. The demonstration dataset is synthetic and is not connected to real bank accounts. Date filters initially cover January 2025, which remains populated in the expanded seed; reset restores that range.
 
 Chart.js 4.5.1 is loaded from the jsDelivr CDN by the dashboard template. The dashboard does not require a JavaScript runtime, package manager, or frontend build step. Internet access is needed to load the chart library; if the CDN is unavailable, the other dashboard sections remain usable and the charts show a clear message.
 
 ## Dependencies
 
 - Flask — HTTP application, JSON routes, and the database-independent health route.
+- Gunicorn — production WSGI server used by Render to bind to its assigned host port.
 - SQLAlchemy — ORM mappings, schema constraints, and parameterized database access.
 - PyMySQL — Python MySQL driver used by the `mysql+pymysql` SQLAlchemy URL.
 - pytest — automated checks for health, database schema and seed behavior, analytics, and API responses.
@@ -110,6 +127,7 @@ pytest
 ## File purpose inventory
 
 - `app.py` — starts the local Flask development server.
+- `wsgi.py` — exports the Flask application object used by the Gunicorn production command.
 - `app/__init__.py` — creates the Flask application, configures routes, and serves the dashboard and database-independent health endpoint.
 - `app/templates/base.html` — shared page shell, accessible top navigation, and frontend asset references.
 - `app/templates/overview.html` — all-time summary and activity visualizations.
@@ -129,7 +147,7 @@ pytest
 - `tests/test_api.py` — checks JSON analytics, date filters, pagination, validation, errors, and database-independent health behavior using SQLite.
 - `tests/test_dashboard.py` — checks the three page routes, active navigation, distinct page content, and local asset serving without a database.
 - `tests/test_database.py` — verifies seed behavior and schema constraints with an in-memory SQLite database.
-- `requirements.txt` — pins Flask, SQLAlchemy, PyMySQL, and pytest.
+- `requirements.txt` — pins Flask, Gunicorn, SQLAlchemy, PyMySQL, and pytest.
 - `.env.example` — documents safe optional environment settings; it contains no secrets.
 - `.gitignore` — excludes environment files, virtual environments, caches, and editor or OS metadata.
 - `README.md` — explains scope, setup, startup, tests, and file responsibilities.

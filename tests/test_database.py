@@ -17,7 +17,7 @@ def make_test_engine():
     return engine
 
 
-def test_seed_is_deterministic_and_refuses_existing_data():
+def test_seed_is_deterministic_idempotent_and_preserves_existing_records():
     engine = make_test_engine()
 
     result = seed_database(engine, account_count=6, transaction_count=40, seed=123)
@@ -47,8 +47,45 @@ def test_seed_is_deterministic_and_refuses_existing_data():
         ]
     assert first_run == second_run
 
-    with pytest.raises(ValueError, match="already contains"):
-        seed_database(engine, account_count=6, transaction_count=40, seed=123)
+    with Session(engine) as session:
+        first_row = session.scalars(select(Transaction).order_by(Transaction.reference)).first()
+        original_value = first_row.amount
+        first_row.amount = Decimal("999.99")
+        session.commit()
+
+    rerun = seed_database(engine, account_count=6, transaction_count=40, seed=123)
+    assert rerun.accounts == 0
+    assert rerun.transactions == 0
+    with Session(engine) as session:
+        assert session.scalar(select(Transaction.amount).where(Transaction.reference == first_run[0][0])) == Decimal("999.99")
+        assert session.scalar(select(Transaction.id).where(Transaction.reference == "SYN-TX-2025-000040")) is not None
+        assert original_value != Decimal("999.99")
+
+
+def test_default_seed_extends_legacy_rows_continuously_and_is_idempotent():
+    engine = make_test_engine()
+    seed_database(engine, transaction_count=100)
+
+    with Session(engine) as session:
+        legacy_rows = {
+            row.reference: (row.amount, row.occurred_at, row.status, row.transaction_type)
+            for row in session.scalars(select(Transaction)).all()
+        }
+
+    result = seed_database(engine)
+    assert result.accounts == 0
+    assert result.transactions == 1_100
+
+    with Session(engine) as session:
+        rows = session.scalars(select(Transaction).order_by(Transaction.occurred_at)).all()
+        assert len(rows) == 1_200
+        assert min(row.occurred_at for row in rows).date().isoformat() == "2025-01-01"
+        assert max(row.occurred_at for row in rows).date().isoformat() == "2027-01-01"
+        for row in rows:
+            if row.reference in legacy_rows:
+                assert (row.amount, row.occurred_at, row.status, row.transaction_type) == legacy_rows[row.reference]
+
+    assert seed_database(engine).transactions == 0
 
 
 def test_schema_rejects_invalid_amount_and_missing_account_reference():

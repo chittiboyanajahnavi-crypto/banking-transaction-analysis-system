@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app import create_app
 from app.database import create_schema
 from app.models import Account, Transaction
+from app.seed import seed_database
 
 
 @pytest.fixture
@@ -180,6 +181,48 @@ def test_volume_uses_utc_inclusive_start_and_exclusive_end(client, app):
             {"date": "2025-01-02", "transaction_count": 1},
         ],
     }
+
+
+def test_seeded_data_appears_across_years_and_empty_ranges_stay_empty(client, app):
+    seed_database(app.extensions["database_engine"])
+
+    january_2025 = client.get(
+        "/api/analytics/volume?start_date=2025-01-01&end_date=2025-02-01"
+    ).get_json()["data"]
+    january_2026 = client.get(
+        "/api/analytics/volume?start_date=2026-01-01&end_date=2026-02-01"
+    ).get_json()["data"]
+    january_2026_transactions = client.get(
+        "/api/transactions?start_date=2026-01-01&end_date=2026-02-01"
+    ).get_json()
+
+    assert january_2025["total_transaction_count"] == 100
+    assert january_2026["total_transaction_count"] >= 31
+    assert len(january_2026["daily_volume"]) == 31
+    assert all(day["transaction_count"] >= 1 for day in january_2026["daily_volume"])
+    assert sum(day["transaction_count"] for day in january_2026["daily_volume"]) == january_2026[
+        "total_transaction_count"
+    ]
+    assert january_2026_transactions["pagination"]["total_records"] == january_2026[
+        "total_transaction_count"
+    ]
+
+    empty_analysis = client.get(
+        "/api/analytics/volume?start_date=2027-02-01&end_date=2027-03-01"
+    ).get_json()["data"]
+    empty_transactions = client.get(
+        "/api/transactions?start_date=2027-02-01&end_date=2027-03-01"
+    ).get_json()
+
+    assert empty_analysis["total_transaction_count"] == 0
+    assert empty_analysis["successful_transaction_count"] == 0
+    assert empty_analysis["successful_transaction_value"] == "0.00"
+    assert empty_analysis["counts_by_status"] == {}
+    assert empty_analysis["counts_by_type"] == {}
+    assert len(empty_analysis["daily_volume"]) == 28
+    assert all(day["transaction_count"] == 0 for day in empty_analysis["daily_volume"])
+    assert empty_transactions["data"] == []
+    assert empty_transactions["pagination"]["total_records"] == 0
 
 
 @pytest.mark.parametrize(
