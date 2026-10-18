@@ -11,6 +11,9 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+*.db
+*.sqlite
+*.sqlite3
 
 # Editors and operating system metadata
 .vscode/
