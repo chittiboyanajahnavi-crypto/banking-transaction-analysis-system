@@ -29,6 +29,7 @@ python app.py
 ```
 
 Open `http://127.0.0.1:5000/health`. A successful response is `{"status":"ok"}`.
+Open `http://127.0.0.1:5000/` for the dashboard. Configure `DATABASE_URL` before starting the app to load analytics and transaction records; the dashboard shell and `/health` remain available without database configuration.
 
 Settings are read from the process environment. `.env.example` documents the supported names; it is a template and is not loaded automatically. No dotenv package is used. Set values in PowerShell, for example:
 
@@ -78,14 +79,23 @@ GET /api/analytics/volume?start_date=2025-01-01&end_date=2025-02-01
 GET /api/transactions?page=1&page_size=25&status=successful&transaction_type=transfer
 ```
 
+## Dashboard
+
+The dashboard is served by Flask at `/` and uses HTML templates, standalone CSS, and vanilla JavaScript under `app/templates/` and `app/static/`. It includes a summary of all-time metrics, daily transaction volume for the selected UTC range, all-time transaction counts by status and type, and a read-only transaction explorer. The table uses the API's descending timestamp/ID order, status and transaction-type filters, inclusive visible dates translated to the API's exclusive end date, and the server's page/page-size contract. Search is not shown because the existing API does not support it.
+
+Summary and chart values come from `/api/analytics/summary` and `/api/analytics/volume`; transaction rows come from `/api/transactions`. Successful totals include successful events only; transaction amounts are not balances or profit, and analytics do not establish fraud. Transfers remain one event. Analytics is USD-only. The demonstration dataset is synthetic and is not connected to real bank accounts. The date controls initially cover January 2025, matching the supplied seed data, and can be changed or cleared.
+
+Chart.js 4.5.1 is loaded from the jsDelivr CDN by the dashboard template. The dashboard does not require a JavaScript runtime, package manager, or frontend build step. Internet access is needed to load the chart library; if the CDN is unavailable, the other dashboard sections remain usable and the charts show a clear message.
+
 ## Dependencies
 
 - Flask — HTTP application, JSON routes, and the database-independent health route.
 - SQLAlchemy — ORM mappings, schema constraints, and parameterized database access.
 - PyMySQL — Python MySQL driver used by the `mysql+pymysql` SQLAlchemy URL.
 - pytest — automated checks for health, database schema and seed behavior, analytics, and API responses.
+- Chart.js — browser-side charts loaded from a pinned CDN URL; it is not a Python package or build dependency.
 
-Flask's supporting packages and pytest's supporting packages are installed transitively by pip. Pandas and NumPy are postponed until the analytics stage needs them.
+Flask's supporting packages and pytest's supporting packages are installed transitively by pip. The current backend and dashboard do not require Pandas or NumPy.
 
 ### Run checks
 
@@ -96,7 +106,11 @@ pytest
 ## File purpose inventory
 
 - `app.py` — starts the local Flask development server.
-- `app/__init__.py` — creates the Flask application and defines the database-independent health route.
+- `app/__init__.py` — creates the Flask application, configures routes, and serves the dashboard and database-independent health endpoint.
+- `app/templates/dashboard.html` — semantic dashboard structure and references to local assets and Chart.js.
+- `app/static/css/dashboard.css` — responsive visual styling, table and status treatments, and keyboard-focus states.
+- `app/static/js/api.js` — read-only fetch helpers, API error mapping, and date/pagination query construction.
+- `app/static/js/dashboard.js` — loads API data, updates metrics/charts/table, validates filters, and handles pagination.
 - `app/config.py` — reads environment settings, including the optional database URL, used by the app factory.
 - `app/api.py` — defines read-only analytics and transaction-list routes, input validation, JSON serialization, and JSON error responses.
 - `app/database.py` — declares the SQLAlchemy base, creates engines, and creates missing model tables; imports do not open a database connection.
@@ -106,6 +120,7 @@ pytest
 - `tests/test_health.py` — checks the health endpoint response using Flask's in-process test client.
 - `tests/test_analytics.py` — verifies analytics status/type handling, Decimal math, UTC date boundaries, empty ranges, and USD-only behavior with SQLite.
 - `tests/test_api.py` — checks JSON analytics, date filters, pagination, validation, errors, and database-independent health behavior using SQLite.
+- `tests/test_dashboard.py` — checks that Flask serves the dashboard shell and local frontend assets without a database.
 - `tests/test_database.py` — verifies seed behavior and schema constraints with an in-memory SQLite database.
 - `requirements.txt` — pins Flask, SQLAlchemy, PyMySQL, and pytest.
 - `.env.example` — documents safe optional environment settings; it contains no secrets.

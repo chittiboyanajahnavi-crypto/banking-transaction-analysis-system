@@ -1,6 +1,6 @@
 """Flask application setup for the Banking Transaction Analysis System."""
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template
 
 from .api import api
 from .config import Config
@@ -23,5 +23,10 @@ def create_app(test_config: dict | None = None) -> Flask:
     def health():
         """Report that the Flask process is responding; this does not check MySQL."""
         return jsonify(status="ok"), 200
+
+    @app.get("/")
+    def dashboard():
+        """Serve the dashboard shell; data is loaded by its read-only API client."""
+        return render_template("dashboard.html"), 200
 
     return app
