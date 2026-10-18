@@ -4,7 +4,7 @@ A local analytics and demonstration application for synthetic banking transactio
 
 ## Current implementation
 
-The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. The database layer defines synthetic accounts and transactions, and includes a deterministic seed command. Seed records are synthetic, dated in January 2025, denominated in USD, and contain no personal information.
+The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Seed records are synthetic, dated in January 2025, denominated in USD, and contain no personal information.
 
 ### Requirements
 
@@ -42,6 +42,24 @@ Create the empty MySQL database first, then run `python -m app.seed` once to cre
 
 The schema stores each transaction as one event. `amount` is a positive `DECIMAL(12, 2)` value and is not a net balance or profit. Deposits have a destination account, withdrawals have a source account, and transfers/payments have both. A transfer is not duplicated into two transaction rows. Timestamp values are stored in UTC. The sample data uses USD only; future analytics must group by currency before summing.
 
+## Transaction analytics
+
+`app.analytics.summarize_transactions(session, start_at=..., end_at=...)` reads actual transaction rows through SQLAlchemy and returns a typed summary. It is independent of Flask routes and does not create or manage the database engine.
+
+- Total transaction count, status counts, type counts, and daily volume include every transaction event in the selected window, including pending and failed events.
+- Successful transaction count and value include only rows with status `successful`. The average uses those same rows, is rounded to two decimal places with decimal half-up rounding, and is `None` when there are no successful rows.
+- Deposit and withdrawal totals include only successful deposits or withdrawals, respectively. They report event value, not a signed net movement, balance, or profit.
+- Each transfer is already one row, so it contributes once to event counts and once to successful value when its status is `successful`.
+- Monetary calculations use `Decimal`. The current analytics service supports USD only and raises a clear error if the selected window contains another currency; it never combines currencies.
+- Supplied date boundaries must be timezone-aware. They are normalized to UTC; persisted `occurred_at` values are interpreted as UTC. The range is half-open: `start_at` is included and `end_at` is excluded. Either bound may be omitted; if both are provided, the daily series includes every UTC day touched by the range, with zero counts for days without records.
+
+The analytics tests use isolated in-memory SQLite databases, so no MySQL server is needed:
+
+```powershell
+pytest tests/test_analytics.py -q
+pytest -q
+```
+
 ## Dependencies
 
 - Flask — HTTP application and the database-independent health route.
@@ -63,9 +81,11 @@ pytest
 - `app/__init__.py` — creates the Flask application and defines the database-independent health route.
 - `app/config.py` — reads the safe default environment settings used by the app factory.
 - `app/database.py` — declares the SQLAlchemy base, creates engines, and creates missing model tables; imports do not open a database connection.
+- `app/analytics.py` — calculates date-filtered counts, USD successful-value metrics, and daily event counts from a SQLAlchemy session.
 - `app/models.py` — defines account and transaction fields, relationships, indexes, and database constraints.
 - `app/seed.py` — generates deterministic, PII-free sample data and exposes `python -m app.seed`.
 - `tests/test_health.py` — checks the health endpoint response using Flask's in-process test client.
+- `tests/test_analytics.py` — verifies analytics status/type handling, Decimal math, UTC date boundaries, empty ranges, and USD-only behavior with SQLite.
 - `tests/test_database.py` — verifies seed behavior and schema constraints with an in-memory SQLite database.
 - `requirements.txt` — pins Flask, SQLAlchemy, PyMySQL, and pytest.
 - `.env.example` — documents safe optional environment settings; it contains no secrets.
