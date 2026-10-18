@@ -53,6 +53,13 @@
     return midnightUtc.toISOString().slice(0, 10);
   }
 
+  function dateRangeQuery(startDate, throughDate) {
+    return new URLSearchParams({
+      start_date: startDate,
+      end_date: toExclusiveEnd(throughDate),
+    }).toString();
+  }
+
   function buildTransactionQuery(filters, page) {
     const params = new URLSearchParams({ page: String(page), page_size: String(filters.pageSize) });
     if (filters.status) params.set("status", filters.status);
@@ -65,11 +72,10 @@
   window.TransactionApi = Object.freeze({
     ApiRequestError,
     getSummary: (options) => getJson("/api/analytics/summary", options),
-    getVolume: (startDate, inclusiveEndDate, options) => {
-      const query = new URLSearchParams({ start_date: startDate, end_date: toExclusiveEnd(inclusiveEndDate) });
-      return getJson(`/api/analytics/volume?${query.toString()}`, options);
-    },
-    getTransactions: (filters, page, options) => getJson(`/api/transactions?${buildTransactionQuery(filters, page)}`, options),
+    getAnalysis: (startDate, throughDate, options) =>
+      getJson(`/api/analytics/volume?${dateRangeQuery(startDate, throughDate)}`, options),
+    getTransactions: (filters, page, options) =>
+      getJson(`/api/transactions?${buildTransactionQuery(filters, page)}`, options),
     toExclusiveEnd,
   });
 })();

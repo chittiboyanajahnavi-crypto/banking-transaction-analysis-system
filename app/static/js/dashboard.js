@@ -1,25 +1,18 @@
 (() => {
   "use strict";
 
+  const DEFAULT_START = "2025-01-01";
+  const DEFAULT_END = "2025-01-31";
   const STATUS_LABELS = { successful: "Successful", pending: "Pending", failed: "Failed" };
   const TYPE_LABELS = { deposit: "Deposit", withdrawal: "Withdrawal", transfer: "Transfer", payment: "Payment" };
   const STATUS_COLORS = { successful: "#347b74", pending: "#b28b4d", failed: "#a04b45" };
   const TYPE_COLORS = ["#244459", "#347b74", "#718b8c", "#a28b67"];
   const numberFormat = new Intl.NumberFormat(undefined);
   const integerFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
-
+  const charts = new Map();
+  const requestVersions = new Map();
+  const activeRequests = new Map();
   const $ = (id) => document.getElementById(id);
-  const state = {
-    summary: null,
-    filters: { status: "", type: "", startDate: "2025-01-01", endDate: "2025-01-31", pageSize: 25 },
-    page: 1,
-    pagination: null,
-    charts: { volume: null, status: null, type: null },
-    requests: { volume: null, transactions: null },
-    requestSequence: { volume: 0, transactions: 0 },
-  };
-
-  function setHidden(element, hidden) { element.hidden = hidden; }
 
   function formatMoney(decimalValue, currency) {
     if (decimalValue === null || decimalValue === undefined) return "—";
@@ -27,22 +20,20 @@
     if (!match) return `${currency} ${decimalValue}`;
     const [, sign, integerPart, fraction = ""] = match;
     const exactInteger = integerFormat.format(BigInt(integerPart));
-    const cents = fraction.padEnd(2, "0");
-    return `${sign}${currency} ${exactInteger}.${cents}`;
+    return `${sign}${currency} ${exactInteger}.${fraction.padEnd(2, "0")}`;
   }
 
   function displayDate(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
     return new Intl.DateTimeFormat(undefined, {
-      year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short",
+      year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      timeZone: "UTC", timeZoneName: "short",
     }).format(date);
   }
 
-  function dateLabel(value) {
-    const [year, month, day] = value.split("-").map(Number);
-    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" })
-      .format(new Date(Date.UTC(year, month - 1, day)));
+  function formatDateRange(startDate, throughDate) {
+    return `${startDate} through ${throughDate} (UTC, inclusive dates)`;
   }
 
   function friendlyError(error) {
@@ -50,28 +41,213 @@
     return "Something went wrong while loading this section. Try again.";
   }
 
-  function validateDateFilters(filters) {
-    if (Boolean(filters.startDate) !== Boolean(filters.endDate)) {
-      return "Choose both a start and end date, or clear both dates.";
-    }
-    if (filters.startDate && filters.endDate && filters.startDate > filters.endDate) {
-      return "The start date must be on or before the end date.";
-    }
-    return "";
+  function destroyChart(canvasId) {
+    const chart = charts.get(canvasId);
+    if (chart) chart.destroy();
+    charts.delete(canvasId);
   }
 
-  function updateActiveFilters() {
-    const parts = [];
-    if (state.filters.status) parts.push(`Status: ${STATUS_LABELS[state.filters.status] || state.filters.status}`);
-    if (state.filters.type) parts.push(`Type: ${TYPE_LABELS[state.filters.type] || state.filters.type}`);
-    if (state.filters.startDate && state.filters.endDate) {
-      parts.push(`UTC dates: ${state.filters.startDate} through ${state.filters.endDate}`);
-    }
-    parts.push(`${state.filters.pageSize} rows per page`);
-    $("active-filters").textContent = `Active filters · ${parts.join(" · ")}`;
+  function beginRequest(key) {
+    activeRequests.get(key)?.abort();
+    const controller = new AbortController();
+    activeRequests.set(key, controller);
+    const version = (requestVersions.get(key) || 0) + 1;
+    requestVersions.set(key, version);
+    return { controller, version };
   }
 
-  function readFilters() {
+  function isCurrentRequest(key, version) {
+    return requestVersions.get(key) === version;
+  }
+
+  function clearChartState(prefix, kind, message) {
+    const canvasId = `${prefix}-${kind}-chart`;
+    destroyChart(canvasId);
+    $(canvasId).parentElement.hidden = true;
+    const empty = $(`${prefix}-${kind}-empty`);
+    const error = $(`${prefix}-${kind}-error`);
+    empty.textContent = message;
+    empty.hidden = false;
+    error.hidden = true;
+    $(`${prefix}-${kind}-description`).textContent = "";
+  }
+
+  function showChartError(prefix, kind, message) {
+    destroyChart(`${prefix}-${kind}-chart`);
+    $(`${prefix}-${kind}-chart`).parentElement.hidden = true;
+    $(`${prefix}-${kind}-empty`).hidden = true;
+    const error = $(`${prefix}-${kind}-error`);
+    error.textContent = message;
+    error.hidden = false;
+  }
+
+  function renderCountChart(prefix, kind, values, labels, colors) {
+    const canvasId = `${prefix}-${kind}-chart`;
+    const canvas = $(canvasId);
+    const empty = $(`${prefix}-${kind}-empty`);
+    const error = $(`${prefix}-${kind}-error`);
+    destroyChart(canvasId);
+    error.hidden = true;
+    const entries = Object.entries(values || {}).filter(([, count]) => Number.isFinite(count) && count > 0);
+    if (!entries.length) {
+      canvas.parentElement.hidden = true;
+      empty.textContent = "No transaction events are available for this chart.";
+      empty.hidden = false;
+      $(`${prefix}-${kind}-description`).textContent = empty.textContent;
+      return;
+    }
+    if (!window.Chart) {
+      showChartError(prefix, kind, "The chart library could not be loaded. The underlying metrics remain available.");
+      return;
+    }
+    empty.hidden = true;
+    canvas.parentElement.hidden = false;
+    const names = entries.map(([key]) => labels[key] || key);
+    const counts = entries.map(([, count]) => count);
+    $(`${prefix}-${kind}-description`).textContent =
+      `${names.map((name, index) => `${name}: ${numberFormat.format(counts[index])}`).join("; ")}.`;
+    charts.set(canvasId, new window.Chart(canvas, {
+      type: "bar",
+      data: {
+        labels: names,
+        datasets: [{
+          label: "Transaction count",
+          data: counts,
+          backgroundColor: entries.map((_, index) => colors[index % colors.length]),
+          borderRadius: 2,
+          maxBarThickness: 34,
+        }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (context) => `Transaction count: ${numberFormat.format(context.parsed.x)}` } },
+        },
+        scales: {
+          x: {
+            beginAtZero: true,
+            ticks: { precision: 0, color: "#53616a" },
+            grid: { color: "#e5e8e3" },
+            title: { display: true, text: "Transaction count", color: "#53616a" },
+          },
+          y: { grid: { display: false }, ticks: { color: "#26343c" } },
+        },
+      },
+    }));
+  }
+
+  function renderDailyChart(prefix, dailyVolume, emptyMessage) {
+    const canvasId = `${prefix}-volume-chart`;
+    const canvas = $(canvasId);
+    const empty = $(`${prefix}-volume-empty`);
+    const error = $(`${prefix}-volume-error`);
+    destroyChart(canvasId);
+    error.hidden = true;
+    const days = dailyVolume || [];
+    const total = days.reduce((sum, day) => sum + day.transaction_count, 0);
+    if (!days.length || total === 0) {
+      canvas.parentElement.hidden = true;
+      empty.textContent = emptyMessage;
+      empty.hidden = false;
+      $(`${prefix}-volume-description`).textContent = emptyMessage;
+      return;
+    }
+    if (!window.Chart) {
+      showChartError(prefix, "volume", "The chart library could not be loaded. The underlying metrics remain available.");
+      return;
+    }
+    empty.hidden = true;
+    canvas.parentElement.hidden = false;
+    const labels = days.map((day) => {
+      const [year, month, date] = day.date.split("-").map(Number);
+      return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" })
+        .format(new Date(Date.UTC(year, month - 1, date)));
+    });
+    const counts = days.map((day) => day.transaction_count);
+    $(`${prefix}-volume-description`).textContent =
+      `Daily transaction counts: ${days.map((day) => `${day.date}: ${numberFormat.format(day.transaction_count)}`).join("; ")}.`;
+    charts.set(canvasId, new window.Chart(canvas, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [{
+          label: "Transactions",
+          data: counts,
+          borderColor: "#347b74",
+          backgroundColor: "rgba(52, 123, 116, 0.10)",
+          borderWidth: 2,
+          fill: true,
+          tension: 0.22,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          pointBackgroundColor: "#347b74",
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { intersect: false, mode: "index" },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (items) => days[items[0].dataIndex]?.date || "",
+              label: (context) => `Transactions: ${numberFormat.format(context.parsed.y)}`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            ticks: { color: "#53616a", maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
+            title: { display: true, text: "Date (UTC)", color: "#53616a" },
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { precision: 0, color: "#53616a" },
+            grid: { color: "#e5e8e3" },
+            title: { display: true, text: "Transaction count", color: "#53616a" },
+          },
+        },
+      },
+    }));
+  }
+
+  function renderOverview(summary) {
+    $("overview-status").textContent = "";
+    $("overview-error").hidden = true;
+    $("overview-metrics").hidden = false;
+    $("overview-metrics").setAttribute("aria-busy", "false");
+    $("metric-total").textContent = numberFormat.format(summary.total_transaction_count);
+    $("metric-successful-count").textContent = numberFormat.format(summary.successful_transaction_count);
+    $("metric-successful-value").textContent = formatMoney(summary.successful_transaction_value, summary.currency);
+    $("metric-average").textContent = formatMoney(summary.average_successful_transaction_amount, summary.currency);
+    $("metric-currency").textContent = `${summary.currency} · successful transactions only`;
+    renderDailyChart("overview", summary.daily_volume, "No transaction events are available for the all-time chart.");
+    renderCountChart("overview", "status", summary.counts_by_status, STATUS_LABELS,
+      Object.keys(summary.counts_by_status).map((key) => STATUS_COLORS[key] || "#718087"));
+    renderCountChart("overview", "type", summary.counts_by_type, TYPE_LABELS, TYPE_COLORS);
+  }
+
+  async function loadOverview() {
+    try {
+      const response = await window.TransactionApi.getSummary();
+      renderOverview(response.data);
+    } catch (error) {
+      const message = friendlyError(error);
+      $("overview-status").textContent = "";
+      $("overview-error").textContent = message;
+      $("overview-error").hidden = false;
+      $("overview-metrics").hidden = true;
+      $("overview-metrics").setAttribute("aria-busy", "false");
+      for (const kind of ["volume", "status", "type"]) showChartError("overview", kind, message);
+    }
+  }
+
+  function readTransactionFilters() {
     return {
       status: $("filter-status").value,
       type: $("filter-type").value,
@@ -81,120 +257,24 @@
     };
   }
 
-  function renderSummary(summary) {
-    state.summary = summary;
-    $("metric-total").textContent = numberFormat.format(summary.total_transaction_count);
-    $("metric-successful-count").textContent = numberFormat.format(summary.successful_transaction_count);
-    $("metric-successful-value").textContent = formatMoney(summary.successful_transaction_value, summary.currency);
-    $("metric-average").textContent = formatMoney(summary.average_successful_transaction_amount, summary.currency);
-    $("metric-currency").textContent = `${summary.currency} · successful transactions only`;
-    $("summary-status").textContent = "";
-    $("summary-error").hidden = true;
-    $("summary-metrics").hidden = false;
-    $("summary-metrics").setAttribute("aria-busy", "false");
-    renderCountChart("status", summary.counts_by_status, STATUS_LABELS, "Transaction count", Object.keys(summary.counts_by_status).map((key) => STATUS_COLORS[key] || "#718087"));
-    renderCountChart("type", summary.counts_by_type, TYPE_LABELS, "Transaction count", TYPE_COLORS);
+  function validateTransactionDates(filters) {
+    if (Boolean(filters.startDate) !== Boolean(filters.endDate)) {
+      return "Choose both dates, or clear both dates.";
+    }
+    if (filters.startDate && filters.endDate && filters.startDate > filters.endDate) {
+      return "The start date must be on or before the through date.";
+    }
+    return "";
   }
 
-  function renderCountChart(kind, values, labels, seriesLabel, colors) {
-    const entries = Object.entries(values || {}).filter(([, count]) => Number.isFinite(count) && count > 0);
-    const canvas = $(`${kind}-chart`);
-    const empty = $(`${kind}-empty`);
-    const error = $(`${kind}-error`);
-    error.hidden = true;
-    if (state.charts[kind]) {
-      state.charts[kind].destroy();
-      state.charts[kind] = null;
-    }
-    if (!entries.length) {
-      canvas.parentElement.hidden = true;
-      empty.textContent = "No transaction events are available for this chart.";
-      empty.hidden = false;
-      $(`${kind}-description`).textContent = empty.textContent;
-      return;
-    }
-    empty.hidden = true;
-    canvas.parentElement.hidden = false;
-    if (!window.Chart) {
-      canvas.parentElement.hidden = true;
-      error.textContent = "The chart library could not be loaded. Summary values remain available.";
-      error.hidden = false;
-      return;
-    }
-    const chartLabels = entries.map(([key]) => labels[key] || key);
-    const counts = entries.map(([, count]) => count);
-    $(`${kind}-description`).textContent = `${chartLabels.map((label, index) => `${label}: ${numberFormat.format(counts[index])}`).join("; ")}.`;
-    state.charts[kind] = new window.Chart(canvas, {
-      type: kind === "status" ? "bar" : "bar",
-      data: {
-        labels: chartLabels,
-        datasets: [{ label: seriesLabel, data: counts, backgroundColor: entries.map((_, index) => colors[index % colors.length]), borderRadius: 2, maxBarThickness: 34 }],
-      },
-      options: {
-        indexAxis: "y",
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { label: (context) => `${seriesLabel}: ${numberFormat.format(context.parsed.x)}` } },
-        },
-        scales: {
-          x: { beginAtZero: true, ticks: { precision: 0, color: "#53616a" }, grid: { color: "#e5e8e3" }, title: { display: true, text: "Transaction count", color: "#53616a" } },
-          y: { grid: { display: false }, ticks: { color: "#26343c" } },
-        },
-      },
-    });
-  }
-
-  function renderVolume(volume) {
-    const canvas = $("volume-chart");
-    const empty = $("volume-empty");
-    const error = $("volume-error");
-    error.hidden = true;
-    if (state.charts.volume) {
-      state.charts.volume.destroy();
-      state.charts.volume = null;
-    }
-    const days = volume.daily_volume || [];
-    const totalEvents = days.reduce((total, day) => total + day.transaction_count, 0);
-    if (!days.length || totalEvents === 0) {
-      canvas.parentElement.hidden = true;
-      empty.textContent = days.length ? "No transaction events occurred in this date range." : "Choose a start and end date to view daily volume.";
-      empty.hidden = false;
-      $("volume-description").textContent = empty.textContent;
-      return;
-    }
-    empty.hidden = true;
-    canvas.parentElement.hidden = false;
-    if (!window.Chart) {
-      canvas.parentElement.hidden = true;
-      error.textContent = "The chart library could not be loaded. Try refreshing the page.";
-      error.hidden = false;
-      return;
-    }
-    const labels = days.map((day) => dateLabel(day.date));
-    const counts = days.map((day) => day.transaction_count);
-    $("volume-description").textContent = `Daily transaction counts: ${days.map((day) => `${day.date}: ${numberFormat.format(day.transaction_count)}`).join("; ")}.`;
-    state.charts.volume = new window.Chart(canvas, {
-      type: "line",
-      data: {
-        labels,
-        datasets: [{ label: "Transactions", data: counts, borderColor: "#347b74", backgroundColor: "rgba(52, 123, 116, 0.10)", borderWidth: 2, fill: true, tension: 0.22, pointRadius: 3, pointHoverRadius: 5, pointBackgroundColor: "#347b74" }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { intersect: false, mode: "index" },
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { title: (items) => days[items[0].dataIndex]?.date || "", label: (context) => `Transactions: ${numberFormat.format(context.parsed.y)}` } },
-        },
-        scales: {
-          x: { grid: { display: false }, ticks: { color: "#53616a", maxRotation: 0, autoSkip: true, maxTicksLimit: 10 }, title: { display: true, text: "Date (UTC)", color: "#53616a" } },
-          y: { beginAtZero: true, ticks: { precision: 0, color: "#53616a" }, grid: { color: "#e5e8e3" }, title: { display: true, text: "Transaction count", color: "#53616a" } },
-        },
-      },
-    });
+  function setActiveFilterText(filters) {
+    const parts = [];
+    if (filters.status) parts.push(`Status: ${STATUS_LABELS[filters.status] || filters.status}`);
+    if (filters.type) parts.push(`Type: ${TYPE_LABELS[filters.type] || filters.type}`);
+    if (filters.startDate && filters.endDate) parts.push(formatDateRange(filters.startDate, filters.endDate));
+    else parts.push("All dates");
+    parts.push(`${filters.pageSize} rows per page`);
+    $("active-filters").textContent = `Active filters · ${parts.join(" · ")}`;
   }
 
   function makeCell(text, className) {
@@ -204,10 +284,10 @@
     return cell;
   }
 
-  function renderTransactions(body) {
+  function renderTransactions(response, page) {
     const tbody = $("transactions-body");
     tbody.replaceChildren();
-    for (const row of body.data) {
+    for (const row of response.data) {
       const tr = document.createElement("tr");
       tr.append(
         makeCell(row.reference),
@@ -223,12 +303,10 @@
       tr.append(statusCell, makeCell(formatMoney(row.amount, row.currency), "amount-column"));
       tbody.append(tr);
     }
-    const pagination = body.pagination;
-    state.pagination = pagination;
+    const pagination = response.pagination;
     $("transactions-status").textContent = "";
     $("transactions-error").hidden = true;
-    $("transactions-empty").hidden = body.data.length !== 0;
-    $("transactions-empty").textContent = "No transactions match these filters.";
+    $("transactions-empty").hidden = response.data.length !== 0;
     $("pagination-summary").textContent = pagination.total_records === 0
       ? "0 transactions"
       : `${numberFormat.format(pagination.total_records)} transactions`;
@@ -236,146 +314,170 @@
     $("previous-page").disabled = !pagination.has_previous;
     $("next-page").disabled = !pagination.has_next;
     document.querySelector(".table-scroll").setAttribute("aria-busy", "false");
+    return page;
   }
 
-  async function loadVolume() {
-    const sequence = ++state.requestSequence.volume;
-    if (state.requests.volume) state.requests.volume.abort();
-    if (state.charts.volume) {
-      state.charts.volume.destroy();
-      state.charts.volume = null;
-    }
-    const controller = new AbortController();
-    state.requests.volume = controller;
-    $("volume-error").hidden = true;
-    $("volume-empty").hidden = true;
-    $("volume-chart").parentElement.hidden = true;
-    $("volume-empty").textContent = "Loading daily volume…";
-    $("volume-empty").hidden = false;
-    const invalid = validateDateFilters(state.filters);
-    if (invalid) {
-      controller.abort();
-      $("volume-empty").hidden = true;
-      $("volume-error").textContent = invalid;
-      $("volume-error").hidden = false;
-      return;
-    }
-    if (!state.filters.startDate) {
-      $("volume-empty").textContent = "Choose a start and end date to view daily volume.";
-      return;
-    }
-    try {
-      const response = await window.TransactionApi.getVolume(state.filters.startDate, state.filters.endDate, { signal: controller.signal });
-      if (sequence === state.requestSequence.volume) renderVolume(response.data);
-    } catch (error) {
-      if (error.name === "AbortError" || sequence !== state.requestSequence.volume) return;
-      $("volume-empty").hidden = true;
-      $("volume-error").textContent = friendlyError(error);
-      $("volume-error").hidden = false;
-    }
-  }
-
-  async function loadTransactions() {
-    const sequence = ++state.requestSequence.transactions;
-    if (state.requests.transactions) state.requests.transactions.abort();
-    const controller = new AbortController();
-    state.requests.transactions = controller;
+  async function loadTransactions(filters, page) {
+    const { controller, version } = beginRequest("transactions");
     $("transactions-body").replaceChildren();
-    $("transactions-error").hidden = true;
     $("transactions-empty").hidden = true;
+    $("transactions-error").hidden = true;
     $("transactions-status").textContent = "Loading transactions…";
     $("pagination-summary").textContent = "Loading transactions…";
-    $("pagination-page").textContent = `Page ${state.page}`;
+    $("pagination-page").textContent = `Page ${page}`;
     $("previous-page").disabled = true;
     $("next-page").disabled = true;
     document.querySelector(".table-scroll").setAttribute("aria-busy", "true");
-    const invalid = validateDateFilters(state.filters);
+    const invalid = validateTransactionDates(filters);
     if (invalid) {
       controller.abort();
       $("transactions-status").textContent = "";
       $("transactions-error").textContent = invalid;
       $("transactions-error").hidden = false;
+      $("pagination-summary").textContent = "Filters need attention";
       document.querySelector(".table-scroll").setAttribute("aria-busy", "false");
       return;
     }
     try {
-      const response = await window.TransactionApi.getTransactions(state.filters, state.page, { signal: controller.signal });
-      if (sequence === state.requestSequence.transactions) renderTransactions(response);
+      const response = await window.TransactionApi.getTransactions(filters, page, { signal: controller.signal });
+      if (isCurrentRequest("transactions", version)) renderTransactions(response, page);
     } catch (error) {
-      if (error.name === "AbortError" || sequence !== state.requestSequence.transactions) return;
+      if (error.name === "AbortError" || !isCurrentRequest("transactions", version)) return;
       $("transactions-status").textContent = "";
       $("transactions-error").textContent = friendlyError(error);
       $("transactions-error").hidden = false;
       $("pagination-summary").textContent = "Transaction count unavailable";
-      $("pagination-page").textContent = `Page ${state.page}`;
-      $("previous-page").disabled = true;
-      $("next-page").disabled = true;
+      $("pagination-page").textContent = `Page ${page}`;
       document.querySelector(".table-scroll").setAttribute("aria-busy", "false");
     }
   }
 
-  async function loadSummary() {
-    $("summary-status").textContent = "Loading summary…";
-    $("summary-error").hidden = true;
-    $("summary-metrics").hidden = true;
-    try {
-      const response = await window.TransactionApi.getSummary();
-      renderSummary(response.data);
-    } catch (error) {
-      $("summary-status").textContent = "";
-      $("summary-error").textContent = friendlyError(error);
-      $("summary-error").hidden = false;
-      $("summary-metrics").setAttribute("aria-busy", "false");
-      for (const kind of ["status", "type"]) {
-        $(`${kind}-chart`).parentElement.hidden = true;
-        $(`${kind}-empty`).hidden = true;
-        $(`${kind}-error`).textContent = friendlyError(error);
-        $(`${kind}-error`).hidden = false;
-      }
-    }
-  }
-
-  function reloadFilteredData() {
-    updateActiveFilters();
-    loadVolume();
-    loadTransactions();
-  }
-
-  function resetFilters() {
-    $("filters-form").reset();
-    $("filter-start").value = "2025-01-01";
-    $("filter-end").value = "2025-01-31";
-    $("filter-page-size").value = "25";
-    state.filters = { status: "", type: "", startDate: "2025-01-01", endDate: "2025-01-31", pageSize: 25 };
-    state.page = 1;
-    reloadFilteredData();
-  }
-
-  function initialize() {
+  function initializeTransactions() {
+    const filters = readTransactionFilters();
+    let page = 1;
+    setActiveFilterText(filters);
     $("filters-form").addEventListener("submit", (event) => {
       event.preventDefault();
-      state.filters = readFilters();
-      state.page = 1;
-      reloadFilteredData();
+      const nextFilters = readTransactionFilters();
+      page = 1;
+      setActiveFilterText(nextFilters);
+      loadTransactions(nextFilters, page);
     });
-    $("reset-filters").addEventListener("click", resetFilters);
+    $("reset-filters").addEventListener("click", () => {
+      $("filters-form").reset();
+      $("filter-start").value = DEFAULT_START;
+      $("filter-end").value = DEFAULT_END;
+      $("filter-page-size").value = "25";
+      page = 1;
+      const defaults = readTransactionFilters();
+      setActiveFilterText(defaults);
+      loadTransactions(defaults, page);
+    });
     $("previous-page").addEventListener("click", () => {
-      if (state.pagination?.has_previous) {
-        state.page -= 1;
-        loadTransactions();
+      if (page > 1) {
+        page -= 1;
+        loadTransactions(readTransactionFilters(), page);
       }
     });
     $("next-page").addEventListener("click", () => {
-      if (state.pagination?.has_next) {
-        state.page += 1;
-        loadTransactions();
+      if (!$("next-page").disabled) {
+        page += 1;
+        loadTransactions(readTransactionFilters(), page);
       }
     });
-    updateActiveFilters();
-    loadSummary();
-    loadVolume();
-    loadTransactions();
+    loadTransactions(filters, page);
   }
 
-  document.addEventListener("DOMContentLoaded", initialize);
+  function readAnalysisDates() {
+    return { startDate: $("analysis-start").value, endDate: $("analysis-end").value };
+  }
+
+  function clearAnalysisResults(message) {
+    $("analysis-metrics").hidden = true;
+    $("analysis-metrics").setAttribute("aria-busy", "true");
+    for (const kind of ["volume", "status", "type"]) clearChartState("analysis", kind, message);
+  }
+
+  function renderAnalysis(data, dates) {
+    const range = formatDateRange(dates.startDate, dates.endDate);
+    $("analysis-period").textContent = `Selected period · ${range}. The API uses an exclusive end at midnight after the through date.`;
+    $("analysis-scope").textContent = range;
+    $("analysis-status").textContent = "";
+    $("analysis-error").hidden = true;
+    $("analysis-metrics").hidden = false;
+    $("analysis-metrics").setAttribute("aria-busy", "false");
+    $("analysis-total").textContent = numberFormat.format(data.total_transaction_count);
+    $("analysis-success-count").textContent = numberFormat.format(data.successful_transaction_count);
+    $("analysis-success-value").textContent = formatMoney(data.successful_transaction_value, data.currency);
+    $("analysis-average").textContent = formatMoney(data.average_successful_transaction_amount, data.currency);
+    $("analysis-deposits").textContent = formatMoney(data.successful_deposit_total, data.currency);
+    $("analysis-withdrawals").textContent = formatMoney(data.successful_withdrawal_total, data.currency);
+    renderDailyChart("analysis", data.daily_volume, "No transaction events occurred in this date range.");
+    renderCountChart("analysis", "status", data.counts_by_status, STATUS_LABELS,
+      Object.keys(data.counts_by_status).map((key) => STATUS_COLORS[key] || "#718087"));
+    renderCountChart("analysis", "type", data.counts_by_type, TYPE_LABELS, TYPE_COLORS);
+  }
+
+  function validateAnalysisDates(dates) {
+    if (!dates.startDate || !dates.endDate) return "Select both a start date and a through date.";
+    if (dates.startDate > dates.endDate) return "The start date must be on or before the through date.";
+    return "";
+  }
+
+  async function loadAnalysis(dates) {
+    const { controller, version } = beginRequest("analysis");
+    $("analysis-error").hidden = true;
+    $("analysis-status").textContent = "Loading selected-period analytics…";
+    clearAnalysisResults("Loading selected-period data…");
+    const invalid = validateAnalysisDates(dates);
+    if (invalid) {
+      controller.abort();
+      $("analysis-status").textContent = "";
+      $("analysis-error").textContent = invalid;
+      $("analysis-error").hidden = false;
+      $("analysis-metrics").setAttribute("aria-busy", "false");
+      $("analysis-period").textContent = "Selected period unavailable until the date range is corrected.";
+      $("analysis-scope").textContent = "Correct the dates to load period metrics.";
+      for (const kind of ["volume", "status", "type"]) $(`analysis-${kind}-empty`).hidden = true;
+      return;
+    }
+    const range = formatDateRange(dates.startDate, dates.endDate);
+    $("analysis-period").textContent = `Selected period · ${range}. The API uses an exclusive end at midnight after the through date.`;
+    $("analysis-scope").textContent = range;
+    try {
+      const response = await window.TransactionApi.getAnalysis(dates.startDate, dates.endDate, { signal: controller.signal });
+      if (isCurrentRequest("analysis", version)) renderAnalysis(response.data, dates);
+    } catch (error) {
+      if (error.name === "AbortError" || !isCurrentRequest("analysis", version)) return;
+      const message = friendlyError(error);
+      $("analysis-status").textContent = "";
+      $("analysis-error").textContent = message;
+      $("analysis-error").hidden = false;
+      $("analysis-metrics").hidden = true;
+      $("analysis-metrics").setAttribute("aria-busy", "false");
+      for (const kind of ["volume", "status", "type"]) showChartError("analysis", kind, message);
+    }
+  }
+
+  function initializeAnalysis() {
+    const defaults = { startDate: DEFAULT_START, endDate: DEFAULT_END };
+    $("analysis-period").textContent = `Selected period · ${formatDateRange(defaults.startDate, defaults.endDate)}.`;
+    $("analysis-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadAnalysis(readAnalysisDates());
+    });
+    $("reset-analysis").addEventListener("click", () => {
+      $("analysis-start").value = DEFAULT_START;
+      $("analysis-end").value = DEFAULT_END;
+      loadAnalysis(defaults);
+    });
+    loadAnalysis(readAnalysisDates());
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const page = document.body.dataset.page;
+    if (page === "overview") loadOverview();
+    if (page === "transactions") initializeTransactions();
+    if (page === "analysis") initializeAnalysis();
+  });
 })();

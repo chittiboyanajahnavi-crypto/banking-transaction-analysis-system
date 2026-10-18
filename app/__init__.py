@@ -25,8 +25,18 @@ def create_app(test_config: dict | None = None) -> Flask:
         return jsonify(status="ok"), 200
 
     @app.get("/")
-    def dashboard():
-        """Serve the dashboard shell; data is loaded by its read-only API client."""
-        return render_template("dashboard.html"), 200
+    def overview():
+        """Serve the all-time transaction overview."""
+        return render_template("overview.html", active_page="overview", include_charts=True), 200
+
+    @app.get("/transactions")
+    def transactions_page():
+        """Serve the transaction explorer."""
+        return render_template("transactions.html", active_page="transactions", include_charts=False), 200
+
+    @app.get("/analysis")
+    def analysis_page():
+        """Serve the date-filtered analytics workspace."""
+        return render_template("analysis.html", active_page="analysis", include_charts=True), 200
 
     return app

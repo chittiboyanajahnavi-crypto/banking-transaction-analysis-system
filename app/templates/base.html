@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A read-only workspace for exploring synthetic banking transaction activity.">
+  <title>{{ active_page|capitalize }} · Banking Transaction Analysis System</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+  {% if include_charts %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" defer></script>{% endif %}
+  <script src="{{ url_for('static', filename='js/api.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}" defer></script>
+</head>
+<body data-page="{{ active_page }}">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <header class="site-header">
+    <a class="brand" href="{{ url_for('overview') }}" aria-label="Banking Transaction Analysis System home">
+      <span class="brand-mark" aria-hidden="true">BT</span>
+      <span class="brand-name">Banking Transaction<br>Analysis System</span>
+    </a>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link{% if active_page == 'overview' %} is-current{% endif %}" href="{{ url_for('overview') }}"{% if active_page == 'overview' %} aria-current="page"{% endif %}>Overview</a>
+      <a class="nav-link{% if active_page == 'transactions' %} is-current{% endif %}" href="{{ url_for('transactions_page') }}"{% if active_page == 'transactions' %} aria-current="page"{% endif %}>Transactions</a>
+      <a class="nav-link{% if active_page == 'analysis' %} is-current{% endif %}" href="{{ url_for('analysis_page') }}"{% if active_page == 'analysis' %} aria-current="page"{% endif %}>Analysis</a>
+    </nav>
+    <span class="environment-label"><span class="environment-dot" aria-hidden="true"></span> Synthetic demonstration data</span>
+  </header>
+
+  <main id="main-content" class="page-shell">
+    {% block page_content %}{% endblock %}
+    <footer class="page-footer">
+      <p>For demonstration and analysis only. This system does not connect to real bank accounts, move money, provide balances, or determine fraud.</p>
+    </footer>
+  </main>
+</body>
+</html>

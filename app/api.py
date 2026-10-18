@@ -1,7 +1,7 @@
 """Read-only JSON endpoints for transaction analytics and browsing."""
 
 import re
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from flask import Blueprint, current_app, jsonify, request
@@ -137,6 +137,41 @@ def _utc_timestamp(value: datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _daily_volume(summary, *, fill_gaps: bool = False) -> list[dict[str, int | str]]:
+    counts = {day.day: day.transaction_count for day in summary.daily_volume}
+    if fill_gaps and counts:
+        current_day = min(counts)
+        last_day = max(counts)
+        daily = []
+        while current_day <= last_day:
+            daily.append({"date": current_day.isoformat(), "transaction_count": counts.get(current_day, 0)})
+            current_day += timedelta(days=1)
+        return daily
+    return [
+        {"date": day.isoformat(), "transaction_count": count}
+        for day, count in sorted(counts.items())
+    ]
+
+
+def _summary_metrics(summary) -> dict:
+    """Serialize values already calculated by the shared analytics service."""
+    return {
+        "currency": summary.currency,
+        "total_transaction_count": summary.total_transaction_count,
+        "successful_transaction_count": summary.successful_transaction_count,
+        "successful_transaction_value": _decimal_string(summary.successful_transaction_value),
+        "average_successful_transaction_amount": (
+            _decimal_string(summary.average_successful_transaction_amount)
+            if summary.average_successful_transaction_amount is not None
+            else None
+        ),
+        "counts_by_status": summary.counts_by_status,
+        "counts_by_type": summary.counts_by_type,
+        "successful_deposit_total": _decimal_string(summary.successful_deposit_total),
+        "successful_withdrawal_total": _decimal_string(summary.successful_withdrawal_total),
+    }
+
+
 @api.get("/analytics/summary")
 def analytics_summary():
     _validate_query_names(set())
@@ -151,23 +186,7 @@ def analytics_summary():
                 "Analytics cannot be calculated for the current currency data.",
             ) from error
 
-    return jsonify(
-        data={
-            "currency": summary.currency,
-            "total_transaction_count": summary.total_transaction_count,
-            "successful_transaction_count": summary.successful_transaction_count,
-            "successful_transaction_value": _decimal_string(summary.successful_transaction_value),
-            "average_successful_transaction_amount": (
-                _decimal_string(summary.average_successful_transaction_amount)
-                if summary.average_successful_transaction_amount is not None
-                else None
-            ),
-            "counts_by_status": summary.counts_by_status,
-            "counts_by_type": summary.counts_by_type,
-            "successful_deposit_total": _decimal_string(summary.successful_deposit_total),
-            "successful_withdrawal_total": _decimal_string(summary.successful_withdrawal_total),
-        }
-    )
+    return jsonify(data={**_summary_metrics(summary), "daily_volume": _daily_volume(summary, fill_gaps=True)})
 
 
 @api.get("/analytics/volume")
@@ -195,10 +214,8 @@ def analytics_volume():
             "start_date_inclusive": start_at.date().isoformat(),
             "end_date_exclusive": end_at.date().isoformat(),
             "timezone": "UTC",
-            "daily_volume": [
-                {"date": day.day.isoformat(), "transaction_count": day.transaction_count}
-                for day in summary.daily_volume
-            ],
+            **_summary_metrics(summary),
+            "daily_volume": _daily_volume(summary),
         }
     )
 

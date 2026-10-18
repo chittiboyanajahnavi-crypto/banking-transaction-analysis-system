@@ -65,8 +65,8 @@ pytest -q
 
 Configure `DATABASE_URL` in the process environment to enable database-backed API routes. The app factory creates an engine without opening a connection; the `/health` route remains independent of database configuration and availability. The API does not create tables or modify transaction records.
 
-- `GET /api/analytics/summary` returns all-time transaction counts, counts by status and type, and successful USD value metrics. Pending and failed events count toward event totals; monetary totals include successful events only. Exact monetary values are JSON strings with two decimal places. The average is `null` if there are no successful events. Analytics currently supports USD only.
-- `GET /api/analytics/volume?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` returns daily event counts for the date range. Both dates are required; the start is inclusive and the end is exclusive. Boundaries and returned days use UTC, and empty days have a zero count.
+- `GET /api/analytics/summary` returns all-time transaction counts, counts by status and type, successful USD value metrics, and daily volume with zero-count days between the first and last event dates. Pending and failed events count toward event totals; monetary totals include successful events only. Exact monetary values are JSON strings with two decimal places. The average is `null` if there are no successful rows. Analytics currently supports USD only.
+- `GET /api/analytics/volume?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` returns daily event counts and all supported summary metrics for the selected range. Both dates are required; the start is inclusive and the end is exclusive. Boundaries and returned days use UTC, and empty days have a zero count. Successful value/deposit/withdrawal amounts only include successful transactions.
 - `GET /api/transactions` returns a paginated list, ordered by occurrence time descending and then ID descending. Optional filters are `status` (`successful`, `pending`, or `failed`), `transaction_type` (`deposit`, `withdrawal`, `transfer`, or `payment`), and paired `start_date`/`end_date` values using the same UTC inclusive/exclusive rule. `page` defaults to `1`; `page_size` defaults to `25` and cannot exceed `100`.
 
 Successful responses use a `data` field; transaction-list responses also include `pagination` metadata. API errors use JSON shaped as `{"error":{"code":"...","message":"..."}}`. Invalid and unknown query parameters return HTTP 400. Missing routes and unsupported methods return JSON 404 and 405 responses. Database failures return a generic 503 response without exposing connection details.
@@ -81,9 +81,13 @@ GET /api/transactions?page=1&page_size=25&status=successful&transaction_type=tra
 
 ## Dashboard
 
-The dashboard is served by Flask at `/` and uses HTML templates, standalone CSS, and vanilla JavaScript under `app/templates/` and `app/static/`. It includes a summary of all-time metrics, daily transaction volume for the selected UTC range, all-time transaction counts by status and type, and a read-only transaction explorer. The table uses the API's descending timestamp/ID order, status and transaction-type filters, inclusive visible dates translated to the API's exclusive end date, and the server's page/page-size contract. Search is not shown because the existing API does not support it.
+The application has three main Flask pages with shared top navigation: `/` (Overview), `/transactions` (Transactions), and `/analysis` (Analysis). They use Jinja templates, standalone CSS, and vanilla JavaScript under `app/templates/` and `app/static/`.
 
-Summary and chart values come from `/api/analytics/summary` and `/api/analytics/volume`; transaction rows come from `/api/transactions`. Successful totals include successful events only; transaction amounts are not balances or profit, and analytics do not establish fraud. Transfers remain one event. Analytics is USD-only. The demonstration dataset is synthetic and is not connected to real bank accounts. The date controls initially cover January 2025, matching the supplied seed data, and can be changed or cleared.
+- **Overview** displays the all-time summary, daily volume, status distribution, and type distribution. The charts and metrics clearly state their scope; event counts include all statuses.
+- **Transactions** is dedicated to the paginated read-only table with status, type, and date filters. Visible dates include both the start and through date. Requests translate the through date to the following UTC midnight, matching the API's exclusive end boundary. The API does not support reference search, so the page does not show a search control.
+- **Analysis** provides a date selector, daily volume, status/type counts, and successful transaction, deposit, and withdrawal amounts from the selected period. The date-filtered figures all refresh together from the existing analytics service via `/api/analytics/volume`.
+
+Successful totals include successful events only; transaction amounts are not balances or profit, and analytics do not establish fraud. Transfers remain one event. Analytics is USD-only. The demonstration dataset is synthetic and is not connected to real bank accounts. Date filters initially cover January 2025, matching the supplied seed data; reset restores that range.
 
 Chart.js 4.5.1 is loaded from the jsDelivr CDN by the dashboard template. The dashboard does not require a JavaScript runtime, package manager, or frontend build step. Internet access is needed to load the chart library; if the CDN is unavailable, the other dashboard sections remain usable and the charts show a clear message.
 
@@ -107,7 +111,10 @@ pytest
 
 - `app.py` — starts the local Flask development server.
 - `app/__init__.py` — creates the Flask application, configures routes, and serves the dashboard and database-independent health endpoint.
-- `app/templates/dashboard.html` — semantic dashboard structure and references to local assets and Chart.js.
+- `app/templates/base.html` — shared page shell, accessible top navigation, and frontend asset references.
+- `app/templates/overview.html` — all-time summary and activity visualizations.
+- `app/templates/transactions.html` — transaction filters, table, and pagination controls.
+- `app/templates/analysis.html` — date selector, selected-period metrics, and analysis charts.
 - `app/static/css/dashboard.css` — responsive visual styling, table and status treatments, and keyboard-focus states.
 - `app/static/js/api.js` — read-only fetch helpers, API error mapping, and date/pagination query construction.
 - `app/static/js/dashboard.js` — loads API data, updates metrics/charts/table, validates filters, and handles pagination.
@@ -120,7 +127,7 @@ pytest
 - `tests/test_health.py` — checks the health endpoint response using Flask's in-process test client.
 - `tests/test_analytics.py` — verifies analytics status/type handling, Decimal math, UTC date boundaries, empty ranges, and USD-only behavior with SQLite.
 - `tests/test_api.py` — checks JSON analytics, date filters, pagination, validation, errors, and database-independent health behavior using SQLite.
-- `tests/test_dashboard.py` — checks that Flask serves the dashboard shell and local frontend assets without a database.
+- `tests/test_dashboard.py` — checks the three page routes, active navigation, distinct page content, and local asset serving without a database.
 - `tests/test_database.py` — verifies seed behavior and schema constraints with an in-memory SQLite database.
 - `requirements.txt` — pins Flask, SQLAlchemy, PyMySQL, and pytest.
 - `.env.example` — documents safe optional environment settings; it contains no secrets.

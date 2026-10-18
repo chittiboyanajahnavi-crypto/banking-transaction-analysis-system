@@ -101,6 +101,10 @@ def test_summary_returns_real_metrics_and_decimal_strings(client, app):
         "counts_by_type": {"deposit": 2, "payment": 1, "transfer": 1, "withdrawal": 2},
         "successful_deposit_total": "10.10",
         "successful_withdrawal_total": "2.25",
+        "daily_volume": [
+            {"date": "2025-01-01", "transaction_count": 3},
+            {"date": "2025-01-02", "transaction_count": 3},
+        ],
     }
     assert isinstance(data["successful_transaction_value"], str)
     assert not isinstance(data["successful_transaction_value"], float)
@@ -120,7 +124,27 @@ def test_empty_summary_has_zero_values_and_null_average(client):
         "counts_by_type": {},
         "successful_deposit_total": "0.00",
         "successful_withdrawal_total": "0.00",
+        "daily_volume": [],
     }
+
+
+def test_summary_fills_zero_count_days_between_all_time_events(client, app):
+    insert_transactions(
+        app,
+        [
+            ("deposit", "successful", "1.00", utc(1)),
+            ("payment", "pending", "2.00", utc(3)),
+        ],
+    )
+
+    response = client.get("/api/analytics/summary")
+
+    assert response.status_code == 200
+    assert response.get_json()["data"]["daily_volume"] == [
+        {"date": "2025-01-01", "transaction_count": 1},
+        {"date": "2025-01-02", "transaction_count": 0},
+        {"date": "2025-01-03", "transaction_count": 1},
+    ]
 
 
 def test_volume_uses_utc_inclusive_start_and_exclusive_end(client, app):
@@ -142,6 +166,15 @@ def test_volume_uses_utc_inclusive_start_and_exclusive_end(client, app):
         "start_date_inclusive": "2025-01-01",
         "end_date_exclusive": "2025-01-03",
         "timezone": "UTC",
+        "currency": "USD",
+        "total_transaction_count": 2,
+        "successful_transaction_count": 1,
+        "successful_transaction_value": "1.00",
+        "average_successful_transaction_amount": "1.00",
+        "counts_by_status": {"pending": 1, "successful": 1},
+        "counts_by_type": {"deposit": 1, "withdrawal": 1},
+        "successful_deposit_total": "1.00",
+        "successful_withdrawal_total": "0.00",
         "daily_volume": [
             {"date": "2025-01-01", "transaction_count": 1},
             {"date": "2025-01-02", "transaction_count": 1},
