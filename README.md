@@ -4,7 +4,7 @@ A local analytics and demonstration application for synthetic banking transactio
 
 ## Current implementation
 
-The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Seed records are synthetic, dated in January 2025, denominated in USD, and contain no personal information.
+The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. Read-only JSON endpoints expose transaction analytics and paginated transaction records. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Seed records are synthetic, dated in January 2025, denominated in USD, and contain no personal information.
 
 ### Requirements
 
@@ -60,12 +60,30 @@ pytest tests/test_analytics.py -q
 pytest -q
 ```
 
+## Read-only API
+
+Configure `DATABASE_URL` in the process environment to enable database-backed API routes. The app factory creates an engine without opening a connection; the `/health` route remains independent of database configuration and availability. The API does not create tables or modify transaction records.
+
+- `GET /api/analytics/summary` returns all-time transaction counts, counts by status and type, and successful USD value metrics. Pending and failed events count toward event totals; monetary totals include successful events only. Exact monetary values are JSON strings with two decimal places. The average is `null` if there are no successful events. Analytics currently supports USD only.
+- `GET /api/analytics/volume?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` returns daily event counts for the date range. Both dates are required; the start is inclusive and the end is exclusive. Boundaries and returned days use UTC, and empty days have a zero count.
+- `GET /api/transactions` returns a paginated list, ordered by occurrence time descending and then ID descending. Optional filters are `status` (`successful`, `pending`, or `failed`), `transaction_type` (`deposit`, `withdrawal`, `transfer`, or `payment`), and paired `start_date`/`end_date` values using the same UTC inclusive/exclusive rule. `page` defaults to `1`; `page_size` defaults to `25` and cannot exceed `100`.
+
+Successful responses use a `data` field; transaction-list responses also include `pagination` metadata. API errors use JSON shaped as `{"error":{"code":"...","message":"..."}}`. Invalid and unknown query parameters return HTTP 400. Missing routes and unsupported methods return JSON 404 and 405 responses. Database failures return a generic 503 response without exposing connection details.
+
+Examples:
+
+```text
+GET /api/analytics/summary
+GET /api/analytics/volume?start_date=2025-01-01&end_date=2025-02-01
+GET /api/transactions?page=1&page_size=25&status=successful&transaction_type=transfer
+```
+
 ## Dependencies
 
-- Flask — HTTP application and the database-independent health route.
+- Flask — HTTP application, JSON routes, and the database-independent health route.
 - SQLAlchemy — ORM mappings, schema constraints, and parameterized database access.
 - PyMySQL — Python MySQL driver used by the `mysql+pymysql` SQLAlchemy URL.
-- pytest — automated checks for the health route, schema constraints, and synthetic seed behavior.
+- pytest — automated checks for health, database schema and seed behavior, analytics, and API responses.
 
 Flask's supporting packages and pytest's supporting packages are installed transitively by pip. Pandas and NumPy are postponed until the analytics stage needs them.
 
@@ -79,13 +97,15 @@ pytest
 
 - `app.py` — starts the local Flask development server.
 - `app/__init__.py` — creates the Flask application and defines the database-independent health route.
-- `app/config.py` — reads the safe default environment settings used by the app factory.
+- `app/config.py` — reads environment settings, including the optional database URL, used by the app factory.
+- `app/api.py` — defines read-only analytics and transaction-list routes, input validation, JSON serialization, and JSON error responses.
 - `app/database.py` — declares the SQLAlchemy base, creates engines, and creates missing model tables; imports do not open a database connection.
 - `app/analytics.py` — calculates date-filtered counts, USD successful-value metrics, and daily event counts from a SQLAlchemy session.
 - `app/models.py` — defines account and transaction fields, relationships, indexes, and database constraints.
 - `app/seed.py` — generates deterministic, PII-free sample data and exposes `python -m app.seed`.
 - `tests/test_health.py` — checks the health endpoint response using Flask's in-process test client.
 - `tests/test_analytics.py` — verifies analytics status/type handling, Decimal math, UTC date boundaries, empty ranges, and USD-only behavior with SQLite.
+- `tests/test_api.py` — checks JSON analytics, date filters, pagination, validation, errors, and database-independent health behavior using SQLite.
 - `tests/test_database.py` — verifies seed behavior and schema constraints with an in-memory SQLite database.
 - `requirements.txt` — pins Flask, SQLAlchemy, PyMySQL, and pytest.
 - `.env.example` — documents safe optional environment settings; it contains no secrets.

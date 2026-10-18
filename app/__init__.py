@@ -2,7 +2,9 @@
 
 from flask import Flask, jsonify
 
+from .api import api
 from .config import Config
+from .database import make_engine
 
 
 def create_app(test_config: dict | None = None) -> Flask:
@@ -11,6 +13,11 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.config.from_object(Config)
     if test_config:
         app.config.update(test_config)
+
+    database_url = app.config.get("DATABASE_URL")
+    app.extensions["database_engine"] = make_engine(database_url) if database_url else None
+
+    app.register_blueprint(api)
 
     @app.get("/health")
     def health():
