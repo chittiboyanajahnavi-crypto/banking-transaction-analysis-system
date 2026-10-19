@@ -4,7 +4,7 @@ A local analytics and demonstration application for synthetic banking transactio
 
 ## Current implementation
 
-The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. Read-only JSON endpoints expose transaction analytics and paginated transaction records. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Default seed data is synthetic, denominated in USD, and covers January 1, 2025 through January 1, 2027, with a continuous daily baseline and additional variation in daily volume. It contains no customer or personal information.
+The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. Read-only JSON endpoints expose transaction analytics and paginated transaction records. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Default seed data is synthetic, denominated in USD, and covers January 1, 2023 through October 18, 2026, inclusive, with a continuous daily baseline and additional variation in daily volume. It contains no customer or personal information.
 
 ### Requirements
 
@@ -55,7 +55,7 @@ $env:APP_DEBUG = "0"
 $env:DATABASE_URL = "mysql+pymysql://bank_demo:replace_me@127.0.0.1:3306/bank_analysis"
 ```
 
-For development, create the MySQL database first and run `python -m app.seed` to create missing tables and add the deterministic synthetic sample. The default seed contains 1,200 events and covers January 1, 2025 through January 1, 2027. The original 100 January 2025 events retain their generated values and timestamps; the next 700 add one event per day from February 1, 2025 through January 1, 2027, and a further 400 add repeat events across that period to vary daily volume. Rerunning the command skips references already present and adds only missing synthetic accounts or transactions. It does not update or delete existing records. Review the target database before running a development seed so synthetic records are not mixed into a production dataset. Replace the example connection values with your local MySQL username and password; set real credentials in your shell environment and never commit them. `.env` files are ignored by Git, but this project does not load them automatically. `create_all` creates missing tables but does not migrate existing schemas.
+For development, create or inspect the MySQL database first and run `python -m app.seed` to create missing tables and add the deterministic synthetic sample. The default seed requests 2,400 events: it retains the original deterministic 2025–2026 records through October 18, 2026 and adds 1,200 events across 2023–2024, with one event for each day in that historical period and additional repeat events. On a fresh database, original-sequence records dated after October 18, 2026 are omitted, so its total is slightly below 2,400. Existing rows, including any later-dated rows created by an older seed version, are never updated or deleted. Rerunning the command skips references already present and adds only missing synthetic accounts or transactions. Review the target database before running a development seed so synthetic records are not mixed into a production dataset. Replace the example connection values with your local MySQL username and password; set real credentials in your shell environment and never commit them. `.env` files are ignored by Git, but this project does not load them automatically. `create_all` creates missing tables but does not migrate existing schemas.
 
 The schema stores each transaction as one event. `amount` is a positive `DECIMAL(12, 2)` value and is not a net balance or profit. Deposits have a destination account, withdrawals have a source account, and transfers/payments have both. A transfer is not duplicated into two transaction rows. Timestamp values are stored in UTC. The sample data uses USD only; future analytics must group by currency before summing.
 
@@ -81,7 +81,7 @@ pytest -q
 
 Configure `DATABASE_URL` in the process environment to enable database-backed API routes. The app factory creates an engine without opening a connection; the `/health` route remains independent of database configuration and availability. The API does not create tables or modify transaction records.
 
-- `GET /api/analytics/summary` returns all-time transaction counts, counts by status and type, successful USD value metrics, and daily volume with zero-count days between the first and last event dates. Pending and failed events count toward event totals; monetary totals include successful events only. Exact monetary values are JSON strings with two decimal places. The average is `null` if there are no successful rows. Analytics currently supports USD only.
+- `GET /api/analytics/summary` returns transaction counts, counts by status and type, successful USD value metrics, and daily volume for records before the exclusive UTC cutoff `2026-10-19 00:00:00` (through October 18, 2026). Pending and failed events count toward event totals; monetary totals include successful events only. Exact monetary values are JSON strings with two decimal places. The average is `null` if there are no successful rows. Analytics currently supports USD only.
 - `GET /api/analytics/volume?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` returns daily event counts and all supported summary metrics for the selected range. Both dates are required; the start is inclusive and the end is exclusive. Boundaries and returned days use UTC, and empty days have a zero count. Successful value/deposit/withdrawal amounts only include successful transactions.
 - `GET /api/transactions` returns a paginated list, ordered by occurrence time descending and then ID descending. Optional filters are `status` (`successful`, `pending`, or `failed`), `transaction_type` (`deposit`, `withdrawal`, `transfer`, or `payment`), and paired `start_date`/`end_date` values using the same UTC inclusive/exclusive rule. `page` defaults to `1`; `page_size` defaults to `25` and cannot exceed `100`.
 
@@ -99,7 +99,7 @@ GET /api/transactions?page=1&page_size=25&status=successful&transaction_type=tra
 
 The application has three main Flask pages with shared top navigation: `/` (Overview), `/transactions` (Transactions), and `/analysis` (Analysis). They use Jinja templates, standalone CSS, and vanilla JavaScript under `app/templates/` and `app/static/`.
 
-- **Overview** displays the all-time summary, daily volume, status distribution, and type distribution. The charts and metrics clearly state their scope; event counts include all statuses.
+- **Overview** displays the summary, daily volume, status distribution, and type distribution for transactions before the exclusive UTC cutoff `2026-10-19 00:00:00` (through October 18, 2026). Event counts include all statuses.
 - **Transactions** is dedicated to the paginated read-only table with status, type, and date filters. Visible dates include both the start and through date. Requests translate the through date to the following UTC midnight, matching the API's exclusive end boundary. The API does not support reference search, so the page does not show a search control.
 - **Analysis** provides a date selector, daily volume, status/type counts, and successful transaction, deposit, and withdrawal amounts from the selected period. The date-filtered figures all refresh together from the existing analytics service via `/api/analytics/volume`.
 
@@ -130,7 +130,7 @@ pytest
 - `wsgi.py` — exports the Flask application object used by the Gunicorn production command.
 - `app/__init__.py` — creates the Flask application, configures routes, and serves the dashboard and database-independent health endpoint.
 - `app/templates/base.html` — shared page shell, accessible top navigation, and frontend asset references.
-- `app/templates/overview.html` — all-time summary and activity visualizations.
+- `app/templates/overview.html` — summary and activity visualizations through October 18, 2026 (UTC).
 - `app/templates/transactions.html` — transaction filters, table, and pagination controls.
 - `app/templates/analysis.html` — date selector, selected-period metrics, and analysis charts.
 - `app/static/css/dashboard.css` — responsive visual styling, table and status treatments, and keyboard-focus states.

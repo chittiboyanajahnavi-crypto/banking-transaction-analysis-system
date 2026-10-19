@@ -49,6 +49,17 @@ def test_pages_keep_distinct_purposes(client):
     assert "Through date (UTC, inclusive)" in analysis
 
 
+def test_dashboard_date_controls_and_overview_describe_cutoff(client):
+    overview = client.get("/").get_data(as_text=True)
+    transactions = client.get("/transactions").get_data(as_text=True)
+    analysis = client.get("/analysis").get_data(as_text=True)
+
+    assert "THROUGH OCTOBER 18, 2026 · UTC" in overview
+    assert "ALL-TIME" not in overview
+    assert transactions.count('max="2026-10-18"') == 2
+    assert analysis.count('max="2026-10-18"') == 2
+
+
 def test_frontend_assets_are_served_by_flask(client):
     css = client.get("/static/css/dashboard.css")
     api_js = client.get("/static/js/api.js")

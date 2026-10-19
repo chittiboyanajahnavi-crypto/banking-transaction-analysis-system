@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -64,7 +64,7 @@ def test_seed_is_deterministic_idempotent_and_preserves_existing_records():
 
 def test_default_seed_extends_legacy_rows_continuously_and_is_idempotent():
     engine = make_test_engine()
-    seed_database(engine, transaction_count=100)
+    seed_database(engine, transaction_count=1_200)
 
     with Session(engine) as session:
         legacy_rows = {
@@ -74,18 +74,89 @@ def test_default_seed_extends_legacy_rows_continuously_and_is_idempotent():
 
     result = seed_database(engine)
     assert result.accounts == 0
-    assert result.transactions == 1_100
+    assert result.transactions == 1_200
 
     with Session(engine) as session:
-        rows = session.scalars(select(Transaction).order_by(Transaction.occurred_at)).all()
-        assert len(rows) == 1_200
-        assert min(row.occurred_at for row in rows).date().isoformat() == "2025-01-01"
-        assert max(row.occurred_at for row in rows).date().isoformat() == "2027-01-01"
+        rows = session.scalars(
+            select(Transaction).order_by(Transaction.occurred_at, Transaction.reference)
+        ).all()
+        assert 2_200 <= len(rows) <= 2_400
+        assert min(row.occurred_at.date() for row in rows) == date(2023, 1, 1)
+        assert max(row.occurred_at.date() for row in rows) == date(2026, 10, 18)
+        assert all(row.occurred_at.date() <= date(2026, 10, 18) for row in rows)
+        assert {row.occurred_at.year for row in rows} == {2023, 2024, 2025, 2026}
+        assert len({row.reference for row in rows}) == len(rows)
         for row in rows:
             if row.reference in legacy_rows:
                 assert (row.amount, row.occurred_at, row.status, row.transaction_type) == legacy_rows[row.reference]
+        first_complete_run = [
+            (
+                row.reference,
+                row.source_account_id,
+                row.destination_account_id,
+                row.transaction_type,
+                row.amount,
+                row.occurred_at,
+                row.status,
+                row.description,
+            )
+            for row in rows
+        ]
 
     assert seed_database(engine).transactions == 0
+    with Session(engine) as session:
+        second_complete_run = [
+            (
+                row.reference,
+                row.source_account_id,
+                row.destination_account_id,
+                row.transaction_type,
+                row.amount,
+                row.occurred_at,
+                row.status,
+                row.description,
+            )
+            for row in session.scalars(
+                select(Transaction).order_by(Transaction.occurred_at, Transaction.reference)
+            ).all()
+        ]
+    assert second_complete_run == first_complete_run
+
+
+def test_seed_preserves_existing_legacy_rows_after_the_new_cutoff():
+    engine = make_test_engine()
+    with Session(engine) as session, session.begin():
+        account = Account(synthetic_reference="SYN-ACCT-0001")
+        session.add(account)
+        session.flush()
+        future_legacy_row = Transaction(
+            reference="SYN-TX-2027-000800",
+            destination_account_id=account.id,
+            transaction_type="deposit",
+            amount=Decimal("42.50"),
+            currency="USD",
+            occurred_at=datetime(2027, 1, 1, 12),
+            status="successful",
+            description="Existing synthetic legacy row",
+        )
+        session.add(future_legacy_row)
+
+    seed_database(engine)
+
+    with Session(engine) as session:
+        row = session.scalar(
+            select(Transaction).where(Transaction.reference == "SYN-TX-2027-000800")
+        )
+        assert row is not None
+        assert row.amount == Decimal("42.50")
+        assert row.occurred_at == datetime(2027, 1, 1, 12)
+        assert row.description == "Existing synthetic legacy row"
+        after_cutoff = session.scalars(
+            select(Transaction).where(Transaction.occurred_at >= datetime(2026, 10, 19))
+        ).all()
+        assert [future_row.reference for future_row in after_cutoff] == [
+            "SYN-TX-2027-000800"
+        ]
 
 
 def test_schema_rejects_invalid_amount_and_missing_account_reference():

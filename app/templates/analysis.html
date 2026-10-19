@@ -15,11 +15,11 @@
       <p class="section-context">Counts include all statuses; amount metrics include successful events only.</p>
     </div>
     <form id="analysis-form" class="filters-form analysis-form">
-      <div class="filter-field"><label for="analysis-start">From date (UTC, inclusive)</label><input id="analysis-start" name="start_date" type="date" value="2025-01-01" required></div>
-      <div class="filter-field"><label for="analysis-end">Through date (UTC, inclusive)</label><input id="analysis-end" name="end_date" type="date" value="2025-01-31" required></div>
+      <div class="filter-field"><label for="analysis-start">From date (UTC, inclusive)</label><input id="analysis-start" name="start_date" type="date" max="2026-10-18" value="2025-01-01" required></div>
+      <div class="filter-field"><label for="analysis-end">Through date (UTC, inclusive)</label><input id="analysis-end" name="end_date" type="date" max="2026-10-18" value="2025-01-31" required></div>
       <div class="filter-actions"><button class="button button-primary" type="submit">Update analysis</button><button class="button button-quiet" id="reset-analysis" type="button">Reset dates</button></div>
     </form>
-    <p class="filter-hint">The visible end date is included; the request uses the next UTC midnight as the API's exclusive end boundary.</p>
+    <p class="filter-hint">Dates are limited to October 18, 2026 (UTC). The visible end date is included; the request uses the next UTC midnight as the API's exclusive end boundary.</p>
     <p id="analysis-period" class="active-filters" aria-live="polite">Selected period: January 1–31, 2025 (UTC).</p>
     <div id="analysis-status" class="inline-status" role="status" aria-live="polite"></div>
     <div id="analysis-error" class="message message-error" role="alert" hidden></div>

@@ -11,6 +11,7 @@ from .models import Transaction
 
 CENT = Decimal("0.01")
 ZERO_MONEY = Decimal("0.00")
+DEMO_CUTOFF_UTC = datetime(2026, 10, 19, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,11 @@ def _utc_naive(value: datetime | None, name: str) -> datetime | None:
     return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def transaction_cutoff_filter():
+    """Return the shared exclusive UTC cutoff predicate for dashboard queries."""
+    return Transaction.occurred_at < _utc_naive(DEMO_CUTOFF_UTC, "DEMO_CUTOFF_UTC")
+
+
 def summarize_transactions(
     session: Session,
     *,
@@ -57,15 +63,16 @@ def summarize_transactions(
     """Calculate event counts and successful USD totals for a half-open UTC window.
 
     `start_at` is inclusive and `end_at` is exclusive. Both may be omitted for
-    all time, or supplied independently to create an open-ended window. Any
-    supplied boundary must be timezone-aware and is normalized to UTC.
+    the full demonstration period, or supplied independently to create an
+    open-ended window. Results always stop before the demonstration cutoff.
+    Any supplied boundary must be timezone-aware and is normalized to UTC.
     """
     start_utc = _utc_naive(start_at, "start_at")
     end_utc = _utc_naive(end_at, "end_at")
     if start_utc is not None and end_utc is not None and start_utc >= end_utc:
         raise ValueError("start_at must be earlier than end_at.")
 
-    filters = []
+    filters = [transaction_cutoff_filter()]
     if start_utc is not None:
         filters.append(Transaction.occurred_at >= start_utc)
     if end_utc is not None:

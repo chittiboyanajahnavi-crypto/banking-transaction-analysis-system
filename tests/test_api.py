@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -111,6 +111,72 @@ def test_summary_returns_real_metrics_and_decimal_strings(client, app):
     assert not isinstance(data["successful_transaction_value"], float)
 
 
+def test_cutoff_applies_to_summary_volume_listing_and_pagination(client, app):
+    cutoff = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    insert_transactions(
+        app,
+        [
+            ("deposit", "successful", "1.25", cutoff - timedelta(seconds=1)),
+            ("withdrawal", "successful", "2.75", datetime(2026, 10, 18, 23, 59, 59, 999999, tzinfo=timezone.utc)),
+            ("transfer", "successful", "100.00", cutoff),
+            ("payment", "successful", "200.00", cutoff + timedelta(days=1)),
+        ],
+    )
+
+    summary = client.get("/api/analytics/summary").get_json()["data"]
+    volume = client.get(
+        "/api/analytics/volume?start_date=2026-10-18&end_date=2026-10-20"
+    ).get_json()["data"]
+    first_page = client.get("/api/transactions?page_size=1").get_json()
+    second_page = client.get("/api/transactions?page=2&page_size=1").get_json()
+    bounded_listing = client.get(
+        "/api/transactions?start_date=2026-10-18&end_date=2026-10-20&page_size=1"
+    ).get_json()
+
+    assert summary["total_transaction_count"] == 2
+    assert summary["successful_transaction_value"] == "4.00"
+    assert summary["average_successful_transaction_amount"] == "2.00"
+    assert volume["total_transaction_count"] == 2
+    assert volume["successful_transaction_value"] == "4.00"
+    assert volume["daily_volume"][0] == {"date": "2026-10-18", "transaction_count": 2}
+    assert first_page["pagination"]["total_records"] == 2
+    assert first_page["pagination"]["total_pages"] == 2
+    assert second_page["pagination"]["total_records"] == 2
+    assert [first_page["data"][0]["reference"], second_page["data"][0]["reference"]] == [
+        "SYN-API-TX-0002",
+        "SYN-API-TX-0001",
+    ]
+    assert first_page["data"][0]["occurred_at"] == "2026-10-18T23:59:59.999999Z"
+    assert second_page["data"][0]["occurred_at"] == "2026-10-18T23:59:59.000000Z"
+    assert bounded_listing["pagination"]["total_records"] == 2
+    assert bounded_listing["pagination"]["total_pages"] == 2
+
+
+def test_future_only_date_filters_return_zero_without_exposing_records(client, app):
+    cutoff = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    insert_transactions(
+        app,
+        [("deposit", "successful", "50.00", cutoff + datetime.resolution)],
+    )
+
+    volume = client.get(
+        "/api/analytics/volume?start_date=2026-10-19&end_date=2026-10-21"
+    ).get_json()["data"]
+    listing = client.get(
+        "/api/transactions?start_date=2026-10-19&end_date=2026-10-21"
+    ).get_json()
+
+    assert volume["total_transaction_count"] == 0
+    assert volume["successful_transaction_value"] == "0.00"
+    assert volume["daily_volume"] == [
+        {"date": "2026-10-19", "transaction_count": 0},
+        {"date": "2026-10-20", "transaction_count": 0},
+    ]
+    assert listing["data"] == []
+    assert listing["pagination"]["total_records"] == 0
+    assert listing["pagination"]["total_pages"] == 0
+
+
 def test_empty_summary_has_zero_values_and_null_average(client):
     response = client.get("/api/analytics/summary")
 
@@ -186,6 +252,9 @@ def test_volume_uses_utc_inclusive_start_and_exclusive_end(client, app):
 def test_seeded_data_appears_across_years_and_empty_ranges_stay_empty(client, app):
     seed_database(app.extensions["database_engine"])
 
+    january_2023 = client.get(
+        "/api/analytics/volume?start_date=2023-01-01&end_date=2023-02-01"
+    ).get_json()["data"]
     january_2025 = client.get(
         "/api/analytics/volume?start_date=2025-01-01&end_date=2025-02-01"
     ).get_json()["data"]
@@ -195,7 +264,13 @@ def test_seeded_data_appears_across_years_and_empty_ranges_stay_empty(client, ap
     january_2026_transactions = client.get(
         "/api/transactions?start_date=2026-01-01&end_date=2026-02-01"
     ).get_json()
+    october_2026 = client.get(
+        "/api/analytics/volume?start_date=2026-10-01&end_date=2026-10-19"
+    ).get_json()["data"]
 
+    assert january_2023["total_transaction_count"] >= 31
+    assert len(january_2023["daily_volume"]) == 31
+    assert all(day["transaction_count"] >= 1 for day in january_2023["daily_volume"])
     assert january_2025["total_transaction_count"] == 100
     assert january_2026["total_transaction_count"] >= 31
     assert len(january_2026["daily_volume"]) == 31
@@ -206,6 +281,9 @@ def test_seeded_data_appears_across_years_and_empty_ranges_stay_empty(client, ap
     assert january_2026_transactions["pagination"]["total_records"] == january_2026[
         "total_transaction_count"
     ]
+    assert october_2026["total_transaction_count"] >= 18
+    assert len(october_2026["daily_volume"]) == 18
+    assert all(day["transaction_count"] >= 1 for day in october_2026["daily_volume"])
 
     empty_analysis = client.get(
         "/api/analytics/volume?start_date=2027-02-01&end_date=2027-03-01"

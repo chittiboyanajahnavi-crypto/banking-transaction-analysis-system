@@ -13,11 +13,16 @@ from .database import create_schema, make_engine
 from .models import Account, Transaction
 
 
-DEFAULT_TRANSACTION_COUNT = 1_200
+LEGACY_TRANSACTION_COUNT = 1_200
+HISTORICAL_TRANSACTION_COUNT = 1_200
+DEFAULT_TRANSACTION_COUNT = LEGACY_TRANSACTION_COUNT + HISTORICAL_TRANSACTION_COUNT
 LEGACY_JANUARY_COUNT = 100
 DAILY_EXTENSION_COUNT = 700
 EXTENSION_START_OFFSET = 31
 DATASET_START = datetime(2025, 1, 1, tzinfo=timezone.utc)
+DATASET_END = datetime(2026, 10, 18, 23, 59, 59, tzinfo=timezone.utc)
+HISTORICAL_START = datetime(2023, 1, 1, tzinfo=timezone.utc)
+HISTORICAL_DAY_COUNT = (DATASET_START.date() - HISTORICAL_START.date()).days
 
 
 @dataclass(frozen=True)
@@ -37,10 +42,11 @@ def seed_database(
 ) -> SeedSummary:
     """Add deterministic synthetic rows without changing existing database records.
 
-    The first 100 events retain their original January 2025 generation so existing
-    development databases can be extended without rewriting their seed records.
-    Later events add one synthetic event per day through January 1, 2027. Existing
-    account and transaction references are left untouched and skipped on reruns.
+    The original 1,200 generated records retain their deterministic references and
+    values. New databases receive only those original records dated through October
+    18, 2026; later-dated references are omitted from new inserts. An additional
+    1,200 records extend the sample across 2023 and 2024. Existing account and
+    transaction references are left untouched and skipped on reruns.
     """
     if account_count < 2:
         raise ValueError("At least two accounts are required for transfer examples.")
@@ -79,7 +85,8 @@ def seed_database(
             "payment": "Synthetic merchant payment",
         }
         record_specs = []
-        for number in range(1, transaction_count + 1):
+        legacy_count = min(transaction_count, LEGACY_TRANSACTION_COUNT)
+        for number in range(1, legacy_count + 1):
             transaction_type = generator.choices(transaction_types, weights=type_weights, k=1)[0]
             status = generator.choices(statuses, weights=status_weights, k=1)[0]
             source = destination = None
@@ -108,6 +115,46 @@ def seed_database(
                     days=EXTENSION_START_OFFSET + generator.randrange(DAILY_EXTENSION_COUNT),
                     seconds=generator.randrange(86_400),
                 )
+            if occurred_at <= DATASET_END:
+                record_specs.append(
+                    {
+                        "reference": f"SYN-TX-{occurred_at.year}-{number:06d}",
+                        "source_account": source,
+                        "destination_account": destination,
+                        "transaction_type": transaction_type,
+                        "amount": Decimal(cents) / Decimal("100"),
+                        "occurred_at": occurred_at,
+                        "status": status,
+                        "description": descriptions[transaction_type],
+                    }
+                )
+
+        historical_count = max(0, transaction_count - LEGACY_TRANSACTION_COUNT)
+        historical_generator = random.Random(f"{seed}:historical")
+        for offset in range(historical_count):
+            number = LEGACY_TRANSACTION_COUNT + offset + 1
+            transaction_type = historical_generator.choices(
+                transaction_types, weights=type_weights, k=1
+            )[0]
+            status = historical_generator.choices(statuses, weights=status_weights, k=1)[0]
+            source = destination = None
+            if transaction_type == "deposit":
+                destination = historical_generator.choice(accounts)
+            elif transaction_type == "withdrawal":
+                source = historical_generator.choice(accounts)
+            else:
+                source, destination = historical_generator.sample(accounts, 2)
+
+            cents = historical_generator.randint(250, 250_000)
+            day_offset = (
+                offset
+                if offset < HISTORICAL_DAY_COUNT
+                else historical_generator.randrange(HISTORICAL_DAY_COUNT)
+            )
+            occurred_at = HISTORICAL_START + timedelta(
+                days=day_offset,
+                seconds=historical_generator.randrange(86_400),
+            )
             record_specs.append(
                 {
                     "reference": f"SYN-TX-{occurred_at.year}-{number:06d}",
@@ -148,8 +195,8 @@ def main() -> None:
     summary = seed_database(engine)
     print(
         f"Inserted {summary.accounts} synthetic accounts and "
-        f"{summary.transactions} synthetic transactions (USD, January 1, 2025 "
-        f"through January 1, 2027; default total {DEFAULT_TRANSACTION_COUNT})."
+        f"{summary.transactions} synthetic transactions (USD, January 1, 2023 "
+        f"through October 18, 2026; default requested total {DEFAULT_TRANSACTION_COUNT})."
     )
 
 

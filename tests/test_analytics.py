@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -96,6 +96,34 @@ def test_empty_database_returns_zero_metrics_and_empty_groups():
     assert summary.successful_deposit_total == Decimal("0.00")
     assert summary.successful_withdrawal_total == Decimal("0.00")
     assert summary.daily_volume == []
+
+
+def test_summary_excludes_events_at_and_after_utc_demo_cutoff():
+    engine = make_test_engine()
+    cutoff = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    add_transactions(
+        engine,
+        [
+            ("deposit", "successful", "1.25", cutoff - timedelta(seconds=1)),
+            ("withdrawal", "successful", "2.75", datetime(2026, 10, 18, 23, 59, 59, 999999, tzinfo=timezone.utc)),
+            ("transfer", "successful", "100.00", cutoff),
+            ("payment", "successful", "200.00", cutoff + timedelta(days=1)),
+        ],
+    )
+
+    with Session(engine) as session:
+        summary = summarize_transactions(session)
+
+    assert summary.total_transaction_count == 2
+    assert summary.successful_transaction_count == 2
+    assert summary.successful_transaction_value == Decimal("4.00")
+    assert summary.average_successful_transaction_amount == Decimal("2.00")
+    assert summary.successful_deposit_total == Decimal("1.25")
+    assert summary.successful_withdrawal_total == Decimal("2.75")
+    assert summary.counts_by_type == {"deposit": 1, "withdrawal": 1}
+    assert [(row.day, row.transaction_count) for row in summary.daily_volume] == [
+        (date(2026, 10, 18), 2),
+    ]
 
 
 def test_start_is_inclusive_end_is_exclusive_and_timezone_is_normalized():

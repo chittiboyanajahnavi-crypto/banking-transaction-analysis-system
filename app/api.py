@@ -10,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import HTTPException
 
-from .analytics import summarize_transactions
+from .analytics import summarize_transactions, transaction_cutoff_filter
 from .models import Transaction
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -236,7 +236,7 @@ def list_transactions():
         raise ApiError(400, "invalid_query_parameter", f"transaction_type must be one of: {allowed_values}.")
     window = _parse_date_window(required=False)
 
-    filters = []
+    filters = [transaction_cutoff_filter()]
     if status is not None:
         filters.append(Transaction.status == status)
     if transaction_type is not None:

@@ -3,6 +3,7 @@
 
   const DEFAULT_START = "2025-01-01";
   const DEFAULT_END = "2025-01-31";
+  const MAX_DEMO_DATE = "2026-10-18";
   const STATUS_LABELS = { successful: "Successful", pending: "Pending", failed: "Failed" };
   const TYPE_LABELS = { deposit: "Deposit", withdrawal: "Withdrawal", transfer: "Transfer", payment: "Payment" };
   const STATUS_COLORS = { successful: "#347b74", pending: "#b28b4d", failed: "#a04b45" };
@@ -226,7 +227,7 @@
     $("metric-successful-value").textContent = formatMoney(summary.successful_transaction_value, summary.currency);
     $("metric-average").textContent = formatMoney(summary.average_successful_transaction_amount, summary.currency);
     $("metric-currency").textContent = `${summary.currency} · successful transactions only`;
-    renderDailyChart("overview", summary.daily_volume, "No transaction events are available for the all-time chart.");
+    renderDailyChart("overview", summary.daily_volume, "No transaction events are available through October 18, 2026.");
     renderCountChart("overview", "status", summary.counts_by_status, STATUS_LABELS,
       Object.keys(summary.counts_by_status).map((key) => STATUS_COLORS[key] || "#718087"));
     renderCountChart("overview", "type", summary.counts_by_type, TYPE_LABELS, TYPE_COLORS);
@@ -263,6 +264,9 @@
     }
     if (filters.startDate && filters.endDate && filters.startDate > filters.endDate) {
       return "The start date must be on or before the through date.";
+    }
+    if (filters.startDate > MAX_DEMO_DATE || filters.endDate > MAX_DEMO_DATE) {
+      return `Choose dates on or before ${MAX_DEMO_DATE} (UTC).`;
     }
     return "";
   }
@@ -421,6 +425,9 @@
   function validateAnalysisDates(dates) {
     if (!dates.startDate || !dates.endDate) return "Select both a start date and a through date.";
     if (dates.startDate > dates.endDate) return "The start date must be on or before the through date.";
+    if (dates.startDate > MAX_DEMO_DATE || dates.endDate > MAX_DEMO_DATE) {
+      return `Choose dates on or before ${MAX_DEMO_DATE} (UTC).`;
+    }
     return "";
   }
 
