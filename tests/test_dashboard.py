@@ -73,5 +73,9 @@ def test_frontend_assets_are_served_by_flask(client):
     assert "getAnalysis" in api_js.get_data(as_text=True)
     assert dashboard_js.status_code == 200
     assert dashboard_js.mimetype in {"application/javascript", "text/javascript"}
-    assert "aria-busy" in dashboard_js.get_data(as_text=True)
+    dashboard_source = dashboard_js.get_data(as_text=True)
+    assert "aria-busy" in dashboard_source
+    assert 'new Intl.NumberFormat("en-IN", {' in dashboard_source
+    assert 'currency: "INR"' in dashboard_source
+    assert "formatMoney(row.amount)" in dashboard_source
     assert "No transaction events are available for this chart." in dashboard_js.get_data(as_text=True)

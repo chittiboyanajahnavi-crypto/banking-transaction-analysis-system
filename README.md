@@ -4,7 +4,7 @@ A local analytics and demonstration application for synthetic banking transactio
 
 ## Current implementation
 
-The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. Read-only JSON endpoints expose transaction analytics and paginated transaction records. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Default seed data is synthetic, denominated in USD, and covers January 1, 2023 through October 18, 2026, inclusive, with a continuous daily baseline and additional variation in daily volume. It contains no customer or personal information.
+The Flask application provides a process health endpoint at `GET /health`; it does not contact MySQL. Read-only JSON endpoints expose transaction analytics and paginated transaction records. The database layer defines synthetic accounts and transactions, includes a deterministic seed command, and provides a reusable analytics service. Default seed data is synthetic, denominated in USD, and covers January 1, 2023 through October 18, 2026, inclusive, with a continuous daily baseline and additional variation in daily volume. Dashboard amounts are displayed in INR without converting those stored USD-valued amounts. It contains no customer or personal information.
 
 ### Requirements
 
@@ -101,7 +101,7 @@ The application has three main Flask pages with shared top navigation: `/` (Over
 
 - **Overview** displays the summary, daily volume, status distribution, and type distribution for transactions before the exclusive UTC cutoff `2026-10-19 00:00:00` (through October 18, 2026). Event counts include all statuses.
 - **Transactions** is dedicated to the paginated read-only table with status, type, and date filters. Visible dates include both the start and through date. Requests translate the through date to the following UTC midnight, matching the API's exclusive end boundary. The API does not support reference search, so the page does not show a search control.
-- **Analysis** provides a date selector, daily volume, status/type counts, and successful transaction, deposit, and withdrawal amounts from the selected period. The date-filtered figures all refresh together from the existing analytics service via `/api/analytics/volume`.
+- **Analysis** provides a date selector, daily volume, status/type counts, and successful transaction, deposit, and withdrawal amounts from the selected period. Dashboard amounts use INR formatting without converting the stored USD-valued amounts; date-filtered figures all refresh together from the existing analytics service via `/api/analytics/volume`.
 
 Successful totals include successful events only; transaction amounts are not balances or profit, and analytics do not establish fraud. Transfers remain one event. Analytics is USD-only. The demonstration dataset is synthetic and is not connected to real bank accounts. Date filters initially cover January 2025, which remains populated in the expanded seed; reset restores that range.
 

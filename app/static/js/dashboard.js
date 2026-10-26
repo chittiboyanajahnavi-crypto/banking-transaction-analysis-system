@@ -9,19 +9,22 @@
   const STATUS_COLORS = { successful: "#347b74", pending: "#b28b4d", failed: "#a04b45" };
   const TYPE_COLORS = ["#244459", "#347b74", "#718b8c", "#a28b67"];
   const numberFormat = new Intl.NumberFormat(undefined);
-  const integerFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+  const moneyFormat = new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
   const charts = new Map();
   const requestVersions = new Map();
   const activeRequests = new Map();
   const $ = (id) => document.getElementById(id);
 
-  function formatMoney(decimalValue, currency) {
+  function formatMoney(decimalValue) {
     if (decimalValue === null || decimalValue === undefined) return "—";
-    const match = String(decimalValue).match(/^(-?)(\d+)(?:\.(\d{1,2}))?$/);
-    if (!match) return `${currency} ${decimalValue}`;
-    const [, sign, integerPart, fraction = ""] = match;
-    const exactInteger = integerFormat.format(BigInt(integerPart));
-    return `${sign}${currency} ${exactInteger}.${fraction.padEnd(2, "0")}`;
+    const amount = Number(decimalValue);
+    if (!Number.isFinite(amount)) return `INR ${decimalValue}`;
+    return moneyFormat.format(amount);
   }
 
   function displayDate(value) {
@@ -224,9 +227,9 @@
     $("overview-metrics").setAttribute("aria-busy", "false");
     $("metric-total").textContent = numberFormat.format(summary.total_transaction_count);
     $("metric-successful-count").textContent = numberFormat.format(summary.successful_transaction_count);
-    $("metric-successful-value").textContent = formatMoney(summary.successful_transaction_value, summary.currency);
-    $("metric-average").textContent = formatMoney(summary.average_successful_transaction_amount, summary.currency);
-    $("metric-currency").textContent = `${summary.currency} · successful transactions only`;
+    $("metric-successful-value").textContent = formatMoney(summary.successful_transaction_value);
+    $("metric-average").textContent = formatMoney(summary.average_successful_transaction_amount);
+    $("metric-currency").textContent = "INR · successful transactions only";
     renderDailyChart("overview", summary.daily_volume, "No transaction events are available through October 18, 2026.");
     renderCountChart("overview", "status", summary.counts_by_status, STATUS_LABELS,
       Object.keys(summary.counts_by_status).map((key) => STATUS_COLORS[key] || "#718087"));
@@ -304,7 +307,7 @@
       status.className = `status-label status-${row.status}`;
       status.textContent = STATUS_LABELS[row.status] || row.status;
       statusCell.append(status);
-      tr.append(statusCell, makeCell(formatMoney(row.amount, row.currency), "amount-column"));
+      tr.append(statusCell, makeCell(formatMoney(row.amount), "amount-column"));
       tbody.append(tr);
     }
     const pagination = response.pagination;
@@ -412,10 +415,10 @@
     $("analysis-metrics").setAttribute("aria-busy", "false");
     $("analysis-total").textContent = numberFormat.format(data.total_transaction_count);
     $("analysis-success-count").textContent = numberFormat.format(data.successful_transaction_count);
-    $("analysis-success-value").textContent = formatMoney(data.successful_transaction_value, data.currency);
-    $("analysis-average").textContent = formatMoney(data.average_successful_transaction_amount, data.currency);
-    $("analysis-deposits").textContent = formatMoney(data.successful_deposit_total, data.currency);
-    $("analysis-withdrawals").textContent = formatMoney(data.successful_withdrawal_total, data.currency);
+    $("analysis-success-value").textContent = formatMoney(data.successful_transaction_value);
+    $("analysis-average").textContent = formatMoney(data.average_successful_transaction_amount);
+    $("analysis-deposits").textContent = formatMoney(data.successful_deposit_total);
+    $("analysis-withdrawals").textContent = formatMoney(data.successful_withdrawal_total);
     renderDailyChart("analysis", data.daily_volume, "No transaction events occurred in this date range.");
     renderCountChart("analysis", "status", data.counts_by_status, STATUS_LABELS,
       Object.keys(data.counts_by_status).map((key) => STATUS_COLORS[key] || "#718087"));
