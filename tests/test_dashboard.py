@@ -42,6 +42,10 @@ def test_pages_keep_distinct_purposes(client):
     assert 'id="transactions-body"' not in overview
     assert 'id="transactions-body"' in transactions
     assert 'id="filter-status"' in transactions
+    assert 'id="account-search-form"' in transactions
+    assert 'id="account-number"' in transactions
+    assert 'id="clear-account-search"' in transactions
+    assert 'id="account-summary"' in transactions
     assert 'id="analysis-start"' not in transactions
     assert 'id="analysis-start"' in analysis
     assert 'id="analysis-deposits"' in analysis
@@ -70,7 +74,10 @@ def test_frontend_assets_are_served_by_flask(client):
     assert "prefers-reduced-motion" in css.get_data(as_text=True)
     assert api_js.status_code == 200
     assert api_js.mimetype in {"application/javascript", "text/javascript"}
-    assert "getAnalysis" in api_js.get_data(as_text=True)
+    api_source = api_js.get_data(as_text=True)
+    assert "getAnalysis" in api_source
+    assert "getAccountTransactions" in api_source
+    assert "/api/accounts/transactions?" in api_source
     assert dashboard_js.status_code == 200
     assert dashboard_js.mimetype in {"application/javascript", "text/javascript"}
     dashboard_source = dashboard_js.get_data(as_text=True)

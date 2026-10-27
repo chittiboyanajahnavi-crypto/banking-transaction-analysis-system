@@ -69,6 +69,12 @@
     return params.toString();
   }
 
+  function buildAccountTransactionQuery(accountNumber, filters, page) {
+    const params = new URLSearchParams(buildTransactionQuery(filters, page));
+    params.set("account_number", accountNumber);
+    return params.toString();
+  }
+
   window.TransactionApi = Object.freeze({
     ApiRequestError,
     getSummary: (options) => getJson("/api/analytics/summary", options),
@@ -76,6 +82,8 @@
       getJson(`/api/analytics/volume?${dateRangeQuery(startDate, throughDate)}`, options),
     getTransactions: (filters, page, options) =>
       getJson(`/api/transactions?${buildTransactionQuery(filters, page)}`, options),
+    getAccountTransactions: (accountNumber, filters, page, options) =>
+      getJson(`/api/accounts/transactions?${buildAccountTransactionQuery(accountNumber, filters, page)}`, options),
     toExclusiveEnd,
   });
 })();

@@ -84,6 +84,7 @@ Configure `DATABASE_URL` in the process environment to enable database-backed AP
 - `GET /api/analytics/summary` returns transaction counts, counts by status and type, successful USD value metrics, and daily volume for records before the exclusive UTC cutoff `2026-10-19 00:00:00` (through October 18, 2026). Pending and failed events count toward event totals; monetary totals include successful events only. Exact monetary values are JSON strings with two decimal places. The average is `null` if there are no successful rows. Analytics currently supports USD only.
 - `GET /api/analytics/volume?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD` returns daily event counts and all supported summary metrics for the selected range. Both dates are required; the start is inclusive and the end is exclusive. Boundaries and returned days use UTC, and empty days have a zero count. Successful value/deposit/withdrawal amounts only include successful transactions.
 - `GET /api/transactions` returns a paginated list, ordered by occurrence time descending and then ID descending. Optional filters are `status` (`successful`, `pending`, or `failed`), `transaction_type` (`deposit`, `withdrawal`, `transfer`, or `payment`), and paired `start_date`/`end_date` values using the same UTC inclusive/exclusive rule. `page` defaults to `1`; `page_size` defaults to `25` and cannot exceed `100`.
+- `GET /api/accounts/transactions?account_number=SYN-ACCT-0001` returns the matching account's paginated transactions, masked account identifier, and count/debit/credit totals for the active filters. Optional status, type, page, and date parameters match `/api/transactions`. Debit and credit totals include successful outgoing and incoming events respectively; they are event values, not balances. Search references are synthetic only. The sample application has no authentication or authorization and is not suitable for real account data.
 
 Successful responses use a `data` field; transaction-list responses also include `pagination` metadata. API errors use JSON shaped as `{"error":{"code":"...","message":"..."}}`. Invalid and unknown query parameters return HTTP 400. Missing routes and unsupported methods return JSON 404 and 405 responses. Database failures return a generic 503 response without exposing connection details.
 
@@ -93,6 +94,7 @@ Examples:
 GET /api/analytics/summary
 GET /api/analytics/volume?start_date=2025-01-01&end_date=2025-02-01
 GET /api/transactions?page=1&page_size=25&status=successful&transaction_type=transfer
+GET /api/accounts/transactions?account_number=SYN-ACCT-0001&page=1&page_size=25
 ```
 
 ## Dashboard
@@ -100,7 +102,7 @@ GET /api/transactions?page=1&page_size=25&status=successful&transaction_type=tra
 The application has three main Flask pages with shared top navigation: `/` (Overview), `/transactions` (Transactions), and `/analysis` (Analysis). They use Jinja templates, standalone CSS, and vanilla JavaScript under `app/templates/` and `app/static/`.
 
 - **Overview** displays the summary, daily volume, status distribution, and type distribution for transactions before the exclusive UTC cutoff `2026-10-19 00:00:00` (through October 18, 2026). Event counts include all statuses.
-- **Transactions** is dedicated to the paginated read-only table with status, type, and date filters. Visible dates include both the start and through date. Requests translate the through date to the following UTC midnight, matching the API's exclusive end boundary. The API does not support reference search, so the page does not show a search control.
+- **Transactions** is dedicated to the paginated read-only table with account search plus status, type, and date filters. Account search uses the existing synthetic account references, shows a masked reference and totals for the current filters, and includes events where the account is the source or destination. Successful outgoing/incoming event amounts are labeled as debits/credits; they are not a balance. Visible dates include both the start and through date. Requests translate the through date to the following UTC midnight, matching the API's exclusive end boundary. Clear search returns to the normal transaction listing.
 - **Analysis** provides a date selector, daily volume, status/type counts, and successful transaction, deposit, and withdrawal amounts from the selected period. Dashboard amounts use INR formatting without converting the stored USD-valued amounts; date-filtered figures all refresh together from the existing analytics service via `/api/analytics/volume`.
 
 Successful totals include successful events only; transaction amounts are not balances or profit, and analytics do not establish fraud. Transfers remain one event. Analytics is USD-only. The demonstration dataset is synthetic and is not connected to real bank accounts. Date filters initially cover January 2025, which remains populated in the expanded seed; reset restores that range.
@@ -137,7 +139,7 @@ pytest
 - `app/static/js/api.js` — read-only fetch helpers, API error mapping, and date/pagination query construction.
 - `app/static/js/dashboard.js` — loads API data, updates metrics/charts/table, validates filters, and handles pagination.
 - `app/config.py` — reads environment settings, including the optional database URL, used by the app factory.
-- `app/api.py` — defines read-only analytics and transaction-list routes, input validation, JSON serialization, and JSON error responses.
+- `app/api.py` — defines read-only analytics, transaction-list, and account-transaction search routes, input validation, JSON serialization, and JSON error responses.
 - `app/database.py` — declares the SQLAlchemy base, creates engines, and creates missing model tables; imports do not open a database connection.
 - `app/analytics.py` — calculates date-filtered counts, USD successful-value metrics, and daily event counts from a SQLAlchemy session.
 - `app/models.py` — defines account and transaction fields, relationships, indexes, and database constraints.

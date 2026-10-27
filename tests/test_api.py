@@ -402,10 +402,149 @@ def test_transaction_listing_applies_supported_status_type_and_date_filters(clie
     assert body["data"][0]["reference"] == "SYN-API-TX-0001"
 
 
+def insert_account_search_transactions(app):
+    """Create linked events for one synthetic account in both directions."""
+    engine = app.extensions["database_engine"]
+    with Session(engine) as session, session.begin():
+        primary = Account(synthetic_reference="SYN-SEARCH-0001")
+        other = Account(synthetic_reference="SYN-SEARCH-0002")
+        session.add_all([primary, other])
+        session.flush()
+        entries = [
+            ("SYN-SEARCH-TX-1", "deposit", "successful", "25.00", datetime(2025, 1, 1, tzinfo=timezone.utc), None, primary),
+            ("SYN-SEARCH-TX-2", "withdrawal", "successful", "10.00", datetime(2025, 1, 2, tzinfo=timezone.utc), primary, None),
+            ("SYN-SEARCH-TX-3", "transfer", "pending", "5.00", datetime(2025, 1, 3, tzinfo=timezone.utc), primary, other),
+            ("SYN-SEARCH-TX-4", "payment", "successful", "8.00", datetime(2025, 1, 4, tzinfo=timezone.utc), primary, other),
+            ("SYN-SEARCH-TX-5", "transfer", "successful", "7.00", datetime(2025, 1, 5, tzinfo=timezone.utc), other, primary),
+            ("SYN-SEARCH-TX-6", "deposit", "failed", "12.00", datetime(2025, 1, 6, tzinfo=timezone.utc), None, primary),
+            ("SYN-SEARCH-TX-CUTOFF", "withdrawal", "successful", "999.00", datetime(2026, 10, 19, tzinfo=timezone.utc), primary, None),
+        ]
+        for reference, transaction_type, status, amount, occurred_at, source, destination in entries:
+            session.add(
+                Transaction(
+                    reference=reference,
+                    source_account=source,
+                    destination_account=destination,
+                    transaction_type=transaction_type,
+                    amount=Decimal(amount),
+                    currency="USD",
+                    occurred_at=occurred_at,
+                    status=status,
+                    description="Synthetic account search test event",
+                )
+            )
+
+
+def test_account_transaction_search_returns_associated_events_masked_account_and_real_totals(client, app):
+    insert_account_search_transactions(app)
+
+    response = client.get(
+        "/api/accounts/transactions?account_number=syn-search-0001&page_size=2"
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["account"] == {"account_number_masked": "••••0001"}
+    assert body["summary"] == {
+        "transaction_count": 6,
+        "successful_debit_total": "18.00",
+        "successful_credit_total": "32.00",
+    }
+    assert body["pagination"] == {
+        "page": 1,
+        "page_size": 2,
+        "total_records": 6,
+        "total_pages": 3,
+        "has_previous": False,
+        "has_next": True,
+    }
+    assert [row["reference"] for row in body["data"]] == [
+        "SYN-SEARCH-TX-6",
+        "SYN-SEARCH-TX-5",
+    ]
+    assert all(row["id"] and row["currency"] == "USD" for row in body["data"])
+    assert "SYN-SEARCH-0001" not in response.get_data(as_text=True)
+
+
+def test_account_transaction_search_applies_date_filters_and_pagination_totals(client, app):
+    insert_account_search_transactions(app)
+
+    response = client.get(
+        "/api/accounts/transactions?account_number=SYN-SEARCH-0001"
+        "&start_date=2025-01-02&end_date=2025-01-05&page_size=1&page=2"
+    )
+
+    body = response.get_json()
+    assert response.status_code == 200
+    assert body["summary"] == {
+        "transaction_count": 3,
+        "successful_debit_total": "18.00",
+        "successful_credit_total": "0.00",
+    }
+    assert body["pagination"]["total_records"] == 3
+    assert body["pagination"]["total_pages"] == 3
+    assert body["pagination"]["page"] == 2
+    assert body["data"][0]["reference"] == "SYN-SEARCH-TX-3"
+
+
+def test_account_transaction_search_obeys_demo_cutoff_even_for_date_filters(client, app):
+    insert_account_search_transactions(app)
+
+    response = client.get(
+        "/api/accounts/transactions?account_number=SYN-SEARCH-0001"
+        "&start_date=2026-10-19&end_date=2026-10-20"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["summary"] == {
+        "transaction_count": 0,
+        "successful_debit_total": "0.00",
+        "successful_credit_total": "0.00",
+    }
+    assert response.get_json()["data"] == []
+
+
+def test_account_search_distinguishes_unknown_account_from_known_empty_account(client, app):
+    with Session(app.extensions["database_engine"]) as session, session.begin():
+        session.add(Account(synthetic_reference="SYN-EMPTY-0001"))
+
+    unknown = client.get("/api/accounts/transactions?account_number=SYN-MISSING-0001")
+    known_empty = client.get("/api/accounts/transactions?account_number=SYN-EMPTY-0001")
+
+    assert_error(unknown, 404, "account_not_found")
+    assert known_empty.status_code == 200
+    assert known_empty.get_json()["summary"] == {
+        "transaction_count": 0,
+        "successful_debit_total": "0.00",
+        "successful_credit_total": "0.00",
+    }
+    assert known_empty.get_json()["data"] == []
+
+
+@pytest.mark.parametrize(
+    ("query", "code"),
+    [
+        ("", "invalid_account_number"),
+        ("account_number=", "invalid_account_number"),
+        ("account_number=bad%2Fvalue", "invalid_account_number"),
+        ("account_number=%27%20OR%201%3D1%20--", "invalid_account_number"),
+    ],
+)
+def test_account_search_rejects_missing_invalid_and_injection_style_values(client, query, code):
+    response = client.get(f"/api/accounts/transactions?{query}")
+
+    assert_error(response, 400, code)
+
+
 def test_errors_are_json_and_database_unavailability_does_not_expose_configuration():
     app_without_database = create_app({"TESTING": True, "DATABASE_URL": None})
     client = app_without_database.test_client()
 
     assert_error(client.get("/api/analytics/summary"), 503, "database_unavailable")
+    assert_error(
+        client.get("/api/accounts/transactions?account_number=SYN-ACCT-0001"),
+        503,
+        "database_unavailable",
+    )
     assert_error(client.get("/api/not-a-route"), 404, "not_found")
     assert_error(client.get("/api/analytics/summary?unexpected=value"), 400, "invalid_query_parameter")

@@ -18,6 +18,7 @@
   const charts = new Map();
   const requestVersions = new Map();
   const activeRequests = new Map();
+  let activeAccountNumber = null;
   const $ = (id) => document.getElementById(id);
 
   function formatMoney(decimalValue) {
@@ -280,6 +281,7 @@
     if (filters.type) parts.push(`Type: ${TYPE_LABELS[filters.type] || filters.type}`);
     if (filters.startDate && filters.endDate) parts.push(formatDateRange(filters.startDate, filters.endDate));
     else parts.push("All dates");
+    if (activeAccountNumber) parts.push("Account search active");
     parts.push(`${filters.pageSize} rows per page`);
     $("active-filters").textContent = `Active filters · ${parts.join(" · ")}`;
   }
@@ -294,6 +296,19 @@
   function renderTransactions(response, page) {
     const tbody = $("transactions-body");
     tbody.replaceChildren();
+    const accountResult = $("account-result");
+    if (response.account) {
+      accountResult.hidden = false;
+      $("account-result-label").textContent =
+        `Account ${response.account.account_number_masked} · totals reflect the current filters and successful events only.`;
+      $("account-transaction-count").textContent = numberFormat.format(response.summary.transaction_count);
+      $("account-debit-total").textContent = formatMoney(response.summary.successful_debit_total);
+      $("account-credit-total").textContent = formatMoney(response.summary.successful_credit_total);
+      $("transactions-empty").textContent = "This account has no transactions matching the current filters.";
+    } else {
+      accountResult.hidden = true;
+      $("transactions-empty").textContent = "No transactions match these filters.";
+    }
     for (const row of response.data) {
       const tr = document.createElement("tr");
       tr.append(
@@ -329,7 +344,10 @@
     $("transactions-body").replaceChildren();
     $("transactions-empty").hidden = true;
     $("transactions-error").hidden = true;
-    $("transactions-status").textContent = "Loading transactions…";
+    $("account-result").hidden = true;
+    $("transactions-status").textContent = activeAccountNumber
+      ? "Searching account transactions…"
+      : "Loading transactions…";
     $("pagination-summary").textContent = "Loading transactions…";
     $("pagination-page").textContent = `Page ${page}`;
     $("previous-page").disabled = true;
@@ -346,7 +364,9 @@
       return;
     }
     try {
-      const response = await window.TransactionApi.getTransactions(filters, page, { signal: controller.signal });
+      const response = activeAccountNumber
+        ? await window.TransactionApi.getAccountTransactions(activeAccountNumber, filters, page, { signal: controller.signal })
+        : await window.TransactionApi.getTransactions(filters, page, { signal: controller.signal });
       if (isCurrentRequest("transactions", version)) renderTransactions(response, page);
     } catch (error) {
       if (error.name === "AbortError" || !isCurrentRequest("transactions", version)) return;
@@ -363,6 +383,30 @@
     const filters = readTransactionFilters();
     let page = 1;
     setActiveFilterText(filters);
+    $("account-search-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const accountNumber = $("account-number").value.trim().toUpperCase();
+      if (!accountNumber) {
+        $("account-number").focus();
+        return;
+      }
+      $("account-number").value = accountNumber;
+      activeAccountNumber = accountNumber;
+      $("clear-account-search").hidden = false;
+      page = 1;
+      const nextFilters = readTransactionFilters();
+      setActiveFilterText(nextFilters);
+      loadTransactions(nextFilters, page);
+    });
+    $("clear-account-search").addEventListener("click", () => {
+      activeAccountNumber = null;
+      $("account-number").value = "";
+      $("clear-account-search").hidden = true;
+      page = 1;
+      const currentFilters = readTransactionFilters();
+      setActiveFilterText(currentFilters);
+      loadTransactions(currentFilters, page);
+    });
     $("filters-form").addEventListener("submit", (event) => {
       event.preventDefault();
       const nextFilters = readTransactionFilters();
@@ -372,6 +416,9 @@
     });
     $("reset-filters").addEventListener("click", () => {
       $("filters-form").reset();
+      $("account-number").value = "";
+      activeAccountNumber = null;
+      $("clear-account-search").hidden = true;
       $("filter-start").value = DEFAULT_START;
       $("filter-end").value = DEFAULT_END;
       $("filter-page-size").value = "25";

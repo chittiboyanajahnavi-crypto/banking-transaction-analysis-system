@@ -14,6 +14,19 @@
       <div><p class="eyebrow">TRANSACTION EXPLORER</p><h2 id="transactions-heading">Records</h2></div>
       <p class="section-context">Amounts are event values, not balances or profit.</p>
     </div>
+    <form id="account-search-form" class="filters-form account-search-form">
+      <div class="filter-field account-search-field"><label for="account-number">Account number</label><input id="account-number" name="account_number" type="text" maxlength="24" autocomplete="off" spellcheck="false" placeholder="e.g. SYN-ACCT-0001" required></div>
+      <div class="filter-actions"><button class="button button-primary" type="submit">Search account</button><button class="button button-quiet" id="clear-account-search" type="button" hidden>Clear search</button></div>
+    </form>
+    <p class="filter-hint">Search uses synthetic demonstration account references. This sample app has no authentication and must not be used with real banking data.</p>
+    <div id="account-result" hidden>
+      <p id="account-result-label" class="active-filters" aria-live="polite"></p>
+      <dl id="account-summary" class="analysis-metrics account-summary">
+        <div><dt>Transactions in current filters</dt><dd id="account-transaction-count">0</dd></div>
+        <div><dt>Successful debits (INR)</dt><dd id="account-debit-total">₹0.00</dd></div>
+        <div><dt>Successful credits (INR)</dt><dd id="account-credit-total">₹0.00</dd></div>
+      </dl>
+    </div>
     <form id="filters-form" class="filters-form">
       <div class="filter-field"><label for="filter-status">Status</label><select id="filter-status" name="status"><option value="">All statuses</option><option value="successful">Successful</option><option value="pending">Pending</option><option value="failed">Failed</option></select></div>
       <div class="filter-field"><label for="filter-type">Transaction type</label><select id="filter-type" name="transaction_type"><option value="">All types</option><option value="deposit">Deposit</option><option value="withdrawal">Withdrawal</option><option value="transfer">Transfer</option><option value="payment">Payment</option></select></div>

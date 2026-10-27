@@ -5,13 +5,13 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from werkzeug.exceptions import HTTPException
 
 from .analytics import summarize_transactions, transaction_cutoff_filter
-from .models import Transaction
+from .models import Account, Transaction
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -128,6 +128,72 @@ def _decimal_string(amount: Decimal) -> str:
     return format(amount, ".2f")
 
 
+def _validate_transaction_filters(
+    allowed: set[str],
+) -> tuple[int, int, str | None, str | None, tuple[datetime, datetime] | None]:
+    """Parse shared transaction-list filters once for both listing endpoints."""
+    _validate_query_names(allowed)
+    page = _parse_positive_integer("page", 1)
+    page_size = _parse_positive_integer("page_size", DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
+    status = _query_value("status")
+    if status is not None and status not in SUPPORTED_STATUSES:
+        allowed_values = ", ".join(sorted(SUPPORTED_STATUSES))
+        raise ApiError(
+            400, "invalid_query_parameter", f"status must be one of: {allowed_values}."
+        )
+    transaction_type = _query_value("transaction_type")
+    if transaction_type is not None and transaction_type not in SUPPORTED_TYPES:
+        allowed_values = ", ".join(sorted(SUPPORTED_TYPES))
+        raise ApiError(
+            400,
+            "invalid_query_parameter",
+            f"transaction_type must be one of: {allowed_values}.",
+        )
+    window = _parse_date_window(required=False)
+    return page, page_size, status, transaction_type, window
+
+
+def _transaction_filters(status, transaction_type, window):
+    filters = [transaction_cutoff_filter()]
+    if status is not None:
+        filters.append(Transaction.status == status)
+    if transaction_type is not None:
+        filters.append(Transaction.transaction_type == transaction_type)
+    if window is not None:
+        start_at, end_at = window
+        filters.extend(
+            [Transaction.occurred_at >= start_at, Transaction.occurred_at < end_at]
+        )
+    return filters
+
+
+def _transaction_json(row: Transaction) -> dict:
+    return {
+        "id": row.id,
+        "reference": row.reference,
+        "source_account_id": row.source_account_id,
+        "destination_account_id": row.destination_account_id,
+        "transaction_type": row.transaction_type,
+        "amount": _decimal_string(row.amount),
+        "currency": row.currency,
+        "occurred_at": _utc_timestamp(row.occurred_at),
+        "status": row.status,
+        "description": row.description,
+    }
+
+
+def _pagination_json(page: int, page_size: int, total_records: int) -> dict:
+    total_pages = (total_records + page_size - 1) // page_size
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total_records": total_records,
+        "total_pages": total_pages,
+        "has_previous": page > 1,
+        "has_next": page < total_pages,
+    }
+
+
 def _utc_timestamp(value: datetime) -> str:
     """Serialize stored UTC timestamps consistently, including SQLite naive values."""
     if value.tzinfo is None:
@@ -223,32 +289,10 @@ def analytics_volume():
 @api.get("/transactions")
 def list_transactions():
     allowed = {"page", "page_size", "status", "transaction_type", "start_date", "end_date"}
-    _validate_query_names(allowed)
-    page = _parse_positive_integer("page", 1)
-    page_size = _parse_positive_integer("page_size", DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
-    status = _query_value("status")
-    if status is not None and status not in SUPPORTED_STATUSES:
-        allowed_values = ", ".join(sorted(SUPPORTED_STATUSES))
-        raise ApiError(400, "invalid_query_parameter", f"status must be one of: {allowed_values}.")
-    transaction_type = _query_value("transaction_type")
-    if transaction_type is not None and transaction_type not in SUPPORTED_TYPES:
-        allowed_values = ", ".join(sorted(SUPPORTED_TYPES))
-        raise ApiError(400, "invalid_query_parameter", f"transaction_type must be one of: {allowed_values}.")
-    window = _parse_date_window(required=False)
-
-    filters = [transaction_cutoff_filter()]
-    if status is not None:
-        filters.append(Transaction.status == status)
-    if transaction_type is not None:
-        filters.append(Transaction.transaction_type == transaction_type)
-    if window is not None:
-        start_at, end_at = window
-        filters.extend(
-            [
-                Transaction.occurred_at >= start_at,
-                Transaction.occurred_at < end_at,
-            ]
-        )
+    page, page_size, status, transaction_type, window = _validate_transaction_filters(
+        allowed
+    )
+    filters = _transaction_filters(status, transaction_type, window)
 
     engine = _database_engine()
     with Session(engine) as session:
@@ -263,29 +307,99 @@ def list_transactions():
             .limit(page_size)
         ).all()
 
-    total_pages = (total_records + page_size - 1) // page_size
     return jsonify(
-        data=[
-            {
-                "id": row.id,
-                "reference": row.reference,
-                "source_account_id": row.source_account_id,
-                "destination_account_id": row.destination_account_id,
-                "transaction_type": row.transaction_type,
-                "amount": _decimal_string(row.amount),
-                "currency": row.currency,
-                "occurred_at": _utc_timestamp(row.occurred_at),
-                "status": row.status,
-                "description": row.description,
-            }
-            for row in rows
-        ],
-        pagination={
-            "page": page,
-            "page_size": page_size,
-            "total_records": total_records,
-            "total_pages": total_pages,
-            "has_previous": page > 1,
-            "has_next": page < total_pages,
+        data=[_transaction_json(row) for row in rows],
+        pagination=_pagination_json(page, page_size, total_records),
+    )
+
+
+@api.get("/accounts/transactions")
+def account_transactions():
+    """Search paginated synthetic transactions and totals for one account."""
+    allowed = {
+        "account_number", "page", "page_size", "status", "transaction_type",
+        "start_date", "end_date",
+    }
+    _validate_query_names(allowed)
+    account_number = _query_value("account_number")
+    if account_number is None:
+        raise ApiError(400, "invalid_account_number", "Enter a synthetic account number to search.")
+    account_number = account_number.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9_-]{1,24}", account_number):
+        raise ApiError(400, "invalid_account_number", "Enter a valid synthetic account number.")
+
+    page, page_size, status, transaction_type, window = _validate_transaction_filters(allowed)
+    engine = _database_engine()
+    with Session(engine) as session:
+        account = session.scalar(
+            select(Account).where(func.upper(Account.synthetic_reference) == account_number)
+        )
+        if account is None:
+            raise ApiError(
+                404,
+                "account_not_found",
+                "No synthetic account matched that account number.",
+            )
+
+        filters = _transaction_filters(status, transaction_type, window)
+        account_membership = or_(
+            Transaction.source_account_id == account.id,
+            Transaction.destination_account_id == account.id,
+        )
+        account_filters = [*filters, account_membership]
+        total_records = session.scalar(
+            select(func.count(Transaction.id)).where(*account_filters)
+        ) or 0
+
+        successful = Transaction.status == "successful"
+        debit_total, credit_total = session.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                successful & (Transaction.source_account_id == account.id),
+                                Transaction.amount,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                successful
+                                & (Transaction.destination_account_id == account.id),
+                                Transaction.amount,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+            ).where(*account_filters)
+        ).one()
+        rows = session.scalars(
+            select(Transaction)
+            .where(*account_filters)
+            .order_by(Transaction.occurred_at.desc(), Transaction.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+
+        # The only account identifiers in this demo are synthetic references.
+        # Still mask them in responses so the endpoint does not echo a full identifier.
+        masked_number = f"••••{account.synthetic_reference[-4:]}"
+
+    return jsonify(
+        account={"account_number_masked": masked_number},
+        summary={
+            "transaction_count": total_records,
+            "successful_debit_total": _decimal_string(debit_total),
+            "successful_credit_total": _decimal_string(credit_total),
         },
+        data=[_transaction_json(row) for row in rows],
+        pagination=_pagination_json(page, page_size, total_records),
     )
